@@ -6,14 +6,21 @@ echo "[INFO] Installing and launching Podscale..."
 WORKDIR="$(pwd)"
 REPO_BASE_URL="https://raw.githubusercontent.com/scs32/podscale/main"
 
+# Package installs need sudo only when not already root (containers and
+# minimal VM guests often have no sudo binary at all).
+SUDO="sudo"
+if [[ "$(id -u)" -eq 0 ]]; then
+    SUDO=""
+fi
+
 # --- Check and install podman ---
 echo "[CHECK] Looking for podman..."
 if ! command -v podman >/dev/null 2>&1; then
   echo "[WARN] podman not found. Attempting to install..."
 
   if [[ -f /etc/debian_version ]]; then
-    sudo apt update
-    sudo apt install -y podman
+    $SUDO apt update
+    $SUDO apt install -y podman
     echo "[OK] podman successfully installed."
   else
     echo "[ERROR] Unsupported OS for auto-install of podman. Please install it manually."
@@ -29,8 +36,8 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "[WARN] jq not found. Attempting to install..."
 
   if [[ -f /etc/debian_version ]]; then
-    sudo apt update
-    sudo apt install -y jq
+    $SUDO apt update
+    $SUDO apt install -y jq
     echo "[OK] jq successfully installed."
   else
     echo "[ERROR] Unsupported OS for auto-install of jq. Please install it manually."
