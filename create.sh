@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Store the original directory where scripts are located
-SCRIPT_DIR="$(pwd)"
+# Directory where the HomePod Creator scripts are located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Load utilities
 source "$SCRIPT_DIR/error-handler.sh"
@@ -23,8 +23,8 @@ main() {
         exit 1
     fi
     
-    # Save config for debugging
-    echo "$config_json" > "$SCRIPT_DIR/.last-config.json"
+    # Save config for debugging (contains no secrets - only the key file path)
+    echo "$config_json" > ./.last-config.json
     
     # Parse basic service info
     source "$SCRIPT_DIR/parse-service-config.sh"
