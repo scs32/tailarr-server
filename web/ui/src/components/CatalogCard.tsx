@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import type { CatalogItem } from "../types";
 import { PodGlyph } from "./Icons";
 
@@ -19,10 +20,9 @@ export function CatalogCard({ item }: { item: CatalogItem }) {
           )}
         </div>
         <div className="spacer" />
-        {/* Install flow lands in Phase 3; disabled placeholder for now. */}
-        <button className="btn btn--primary btn--sm" disabled>
+        <Link className="btn btn--primary btn--sm" to={`/install/${item.name}`}>
           {item.installed ? "Reinstall" : "Install"}
-        </button>
+        </Link>
       </div>
       <div className="catalog-card__meta">{item.image}</div>
     </div>

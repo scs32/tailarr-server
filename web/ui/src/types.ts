@@ -41,3 +41,40 @@ export interface ActionResult {
   error: string | null;
   output: string;
 }
+
+export interface Info {
+  pods_dir: string;
+  controller_pods: string[];
+}
+
+export interface InstallResult {
+  ok: boolean;
+  name: string;
+  error: string | null;
+  output: string;
+}
+
+export interface ShareResult {
+  ok: boolean;
+  name?: string;
+  error: string | null;
+  message?: string;
+  output?: string;
+}
+
+// POST /api/install body. `service` names a catalog entry; `custom` marks an
+// arbitrary OCI image. Omitted volumes default to per-pod paths server-side.
+export interface InstallRequest {
+  service?: string;
+  custom?: boolean;
+  image?: string;
+  command?: string;
+  ports?: Record<string, string>;
+  environment?: Record<string, string>;
+  volumes?: Record<string, string>;
+  shares?: string[];
+  tailscale?: boolean;
+  https?: boolean;
+  npm?: boolean;
+  authkey?: string;
+}

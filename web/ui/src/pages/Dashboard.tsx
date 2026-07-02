@@ -1,22 +1,20 @@
 import { useCallback, useEffect, useState } from "react";
-import type { CatalogItem, Pod } from "../types";
+import { Link } from "react-router-dom";
+import type { Pod } from "../types";
 import { api } from "../api";
 import { PodCard } from "../components/PodCard";
-import { CatalogCard } from "../components/CatalogCard";
 import { LogsModal } from "../components/LogsModal";
+import { Alert } from "../components/Alert";
 import { GridIcon } from "../components/Icons";
 
 export function Dashboard() {
   const [pods, setPods] = useState<Pod[] | null>(null);
-  const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [error, setError] = useState<string>("");
   const [logsFor, setLogsFor] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [p, c] = await Promise.all([api.pods(), api.catalog()]);
-      setPods(p);
-      setCatalog(c);
+      setPods(await api.pods());
       setError("");
     } catch (e) {
       setError(String(e));
@@ -41,8 +39,8 @@ export function Dashboard() {
       </p>
 
       {error && (
-        <div className="alert alert--err" style={{ marginTop: "var(--sp-5)" }}>
-          <div>Couldn’t reach the controller API: {error}</div>
+        <div style={{ marginTop: "var(--sp-5)" }}>
+          <Alert kind="err">Couldn’t reach the controller API: {error}</Alert>
         </div>
       )}
 
@@ -51,27 +49,25 @@ export function Dashboard() {
         <div className="empty">
           <GridIcon className="empty__icon" />
           <div className="empty__title">No pods deployed yet</div>
-          <p style={{ margin: 0 }}>Install a service from the catalog below.</p>
+          <p style={{ margin: "0 0 var(--sp-5)" }}>
+            Install a service from the catalog, or spin up any OCI image.
+          </p>
+          <div className="preview-row" style={{ justifyContent: "center" }}>
+            <Link className="btn btn--primary" to="/catalog">
+              Browse catalog
+            </Link>
+            <Link className="btn btn--secondary" to="/custom">
+              + Custom pod
+            </Link>
+          </div>
         </div>
       ) : (
         <div className="grid">
           {pods?.map((pod) => (
-            <PodCard
-              key={pod.name}
-              pod={pod}
-              onChanged={refresh}
-              onLogs={setLogsFor}
-            />
+            <PodCard key={pod.name} pod={pod} onChanged={refresh} onLogs={setLogsFor} />
           ))}
         </div>
       )}
-
-      <div className="section-title">Catalog</div>
-      <div className="grid">
-        {catalog.map((item) => (
-          <CatalogCard key={item.name} item={item} />
-        ))}
-      </div>
 
       {logsFor && <LogsModal name={logsFor} onClose={() => setLogsFor(null)} />}
     </>
