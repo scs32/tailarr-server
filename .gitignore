@@ -1,0 +1,5 @@
+# Runtime artifacts written to the working directory
+.deployment.log
+.error.log
+.last-config.json
+cleanup.sh
