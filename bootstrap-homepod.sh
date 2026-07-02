@@ -81,6 +81,20 @@ chmod +x /root/start-pods.sh
 
 mkdir -p "$PODS_DIR/homepod/tailscale"
 
+# HTTPS via tailscale serve: TLS on 443 with an automatic ts.net cert,
+# proxying to the web UI. Requires "HTTPS Certificates" enabled once in
+# the Tailscale admin console (DNS tab).
+cat > "$PODS_DIR/homepod/tailscale-serve.json" << 'SERVEEOF'
+{
+  "TCP": {"443": {"HTTPS": true}},
+  "Web": {
+    "${TS_CERT_DOMAIN}:443": {
+      "Handlers": {"/": {"Proxy": "http://127.0.0.1:8080"}}
+    }
+  }
+}
+SERVEEOF
+
 echo "Removing existing homepod containers..."
 podman rm -f homepod 2>/dev/null || true
 podman rm -f tailscale-homepod 2>/dev/null || true
@@ -91,6 +105,8 @@ podman run -d \
   --cap-add NET_ADMIN --cap-add NET_RAW \
   --device /dev/net/tun \
   -v "$PODS_DIR/homepod/tailscale:/var/lib/tailscale" \
+  -v "$PODS_DIR/homepod/tailscale-serve.json:/config/serve.json" \
+  -e TS_SERVE_CONFIG=/config/serve.json \
   -e TS_AUTHKEY="$(cat "$KEY_FILE" 2>/dev/null || true)" \
   -e TS_STATE_DIR=/var/lib/tailscale \
   -e TS_HOSTNAME="homepod" \
@@ -119,4 +135,4 @@ FQDN=$(podman exec tailscale-homepod tailscale status --json --peers=false 2>/de
     | grep -o '"DNSName": *"[^"]*"' | head -1 | cut -d'"' -f4 || true)
 echo ""
 echo "HomePod controller is up."
-echo "  Web UI: http://${FQDN%.}:8080"
+echo "  Web UI: https://${FQDN%.}  (or http://${FQDN%.}:8080)"
