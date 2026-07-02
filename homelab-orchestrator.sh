@@ -41,6 +41,13 @@ main() {
     local tailscale_choice
     tailscale_choice=$(ask_yes_no "Would you like to enable Tailscale?" "yes") || { echo "Exiting..."; exit 0; }
 
+    # Step 3b: HTTPS via tailscale serve (needs HTTPS Certificates enabled
+    # once in the Tailscale admin console, DNS tab)
+    local https_choice="no"
+    if [[ "$tailscale_choice" == "yes" ]]; then
+        https_choice=$(ask_yes_no "Enable HTTPS via Tailscale serve (https://<service>.<tailnet>.ts.net)?" "yes") || { echo "Exiting..."; exit 0; }
+    fi
+
     # Step 4: Get Base Path (needed to place key files)
     echo "=== Path Configuration ==="
     local base_path
@@ -74,7 +81,7 @@ main() {
     # Step 8: Build Configuration
     echo "=== Building Configuration ==="
     local config_file
-    config_file=$(build_configuration "$JSON_FILE" "$selected_service" "$npm_choice" "$tailscale_choice" "$auth_key_file" "$base_path")
+    config_file=$(build_configuration "$JSON_FILE" "$selected_service" "$npm_choice" "$tailscale_choice" "$auth_key_file" "$base_path" "$https_choice")
 
     # Display summary
     display_config_summary "$config_file"

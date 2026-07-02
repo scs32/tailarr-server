@@ -12,9 +12,15 @@ generate_run_template() {
     local include_npm="$8"
     local primary_port="$9"
     local service_info="${10}"
+    local include_https="${11:-no}"
 
     local ports_json
     ports_json=$(jq -c '.ports // {}' <<<"$service_info")
+
+    # HTTPS needs a port to proxy to and a Tailscale sidecar to serve from
+    if [[ "$include_https" == "yes" && ( -z "$primary_port" || "$include_ts" != "yes" ) ]]; then
+        include_https="no"
+    fi
 
     # --- Header and container cleanup ---
     cat << EOF
@@ -45,6 +51,28 @@ if [ ! -f "\$TS_AUTHKEY_FILE" ] && [ ! -f "\$(pwd)/tailscale/tailscaled.state" ]
   exit 1
 fi
 
+EOF
+
+        if [[ "$include_https" == "yes" ]]; then
+            cat << EOF
+# HTTPS via tailscale serve: terminate TLS on 443 with an automatic
+# ts.net certificate and proxy to the service. Requires "HTTPS
+# Certificates" to be enabled once in the Tailscale admin console (DNS tab).
+cat > "\$(pwd)/tailscale-serve.json" << 'SERVEEOF'
+{
+  "TCP": {"443": {"HTTPS": true}},
+  "Web": {
+    "\${TS_CERT_DOMAIN}:443": {
+      "Handlers": {"/": {"Proxy": "http://127.0.0.1:$primary_port"}}
+    }
+  }
+}
+SERVEEOF
+
+EOF
+        fi
+
+        cat << EOF
 # Start Tailscale first with a unique hostname for this service
 echo "Starting Tailscale..."
 podman run -d \\
@@ -52,6 +80,14 @@ podman run -d \\
   --cap-add NET_ADMIN --cap-add NET_RAW \\
   --device /dev/net/tun \\
   -v "\$(pwd)/tailscale:/var/lib/tailscale" \\
+EOF
+        if [[ "$include_https" == "yes" ]]; then
+            cat << EOF
+  -v "\$(pwd)/tailscale-serve.json:/config/serve.json" \\
+  -e TS_SERVE_CONFIG=/config/serve.json \\
+EOF
+        fi
+        cat << EOF
   -e TS_AUTHKEY="\$(cat "\$TS_AUTHKEY_FILE" 2>/dev/null || true)" \\
   -e TS_STATE_DIR=/var/lib/tailscale \\
   -e TS_HOSTNAME="$service" \\
@@ -158,7 +194,7 @@ EOF
 
     # --- Results ---
     if [[ "$include_ts" == "yes" ]]; then
-        generate_tailscale_results "$service" "$include_npm" "$primary_port" "$ports_json"
+        generate_tailscale_results "$service" "$include_npm" "$primary_port" "$ports_json" "$include_https"
     else
         generate_local_results "$service" "$include_npm" "$primary_port" "$ports_json"
     fi
@@ -170,6 +206,7 @@ generate_tailscale_results() {
     local include_npm="$2"
     local primary_port="$3"
     local ports_json="$4"
+    local include_https="${5:-no}"
 
     cat << EOF
 # Get Tailscale network information
@@ -241,6 +278,10 @@ EOF
 
     if [[ "$include_npm" == "yes" ]]; then
         echo "echo \"  NPM Admin: http://\$TS_FQDN:81\""
+    fi
+
+    if [[ "$include_https" == "yes" ]]; then
+        echo "echo \"  $service: https://\$TS_FQDN (HTTPS via tailscale serve)\""
     fi
 
     if [[ -n "$primary_port" ]]; then

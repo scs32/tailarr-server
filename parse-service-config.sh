@@ -21,6 +21,8 @@ parse_service_config() {
     base_path=$(jq -r '.base_path' <<<"$config_json")
     include_ts=$(jq -r '.include_tailscale' <<<"$config_json")
     include_npm=$(jq -r '.include_npm' <<<"$config_json")
+    local include_https
+    include_https=$(jq -r '.include_https // "no"' <<<"$config_json")
     network_mode=$(jq -r '.network_mode // "bridge"' <<<"$config_json")
     
     # Validate required fields
@@ -76,6 +78,7 @@ parse_service_config() {
         --arg service_dir "$service_dir" \
         --arg include_ts "$include_ts" \
         --arg include_npm "$include_npm" \
+        --arg include_https "$include_https" \
         --arg network_mode "$network_mode" \
         --arg primary_port "$primary_port" \
         --argjson env_vars "$env_vars_json" \
@@ -92,6 +95,7 @@ parse_service_config() {
             service_dir: $service_dir,
             include_tailscale: $include_ts,
             include_npm: $include_npm,
+            include_https: $include_https,
             network_mode: $network_mode,
             primary_port: $primary_port,
             environment: $env_vars,

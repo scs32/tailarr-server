@@ -13,6 +13,7 @@ build_configuration() {
     local tailscale_choice="$4"
     local auth_key_file="$5"
     local base_path="$6"
+    local https_choice="${7:-no}"
 
     # Get service specification from homelab.js
     local spec
@@ -54,6 +55,7 @@ build_configuration() {
         --arg restart_policy "$restart_policy" \
         --arg include_npm "$npm_choice" \
         --arg include_tailscale "$tailscale_choice" \
+        --arg include_https "$https_choice" \
         --arg auth_key_file "$auth_key_file" \
         --arg base_path "$base_path" \
         --argjson ports "$ports" \
@@ -67,6 +69,7 @@ build_configuration() {
             restart_policy: $restart_policy,
             include_npm: $include_npm,
             include_tailscale: $include_tailscale,
+            include_https: $include_https,
             auth_key_file: $auth_key_file,
             base_path: $base_path,
             environment: $environment,

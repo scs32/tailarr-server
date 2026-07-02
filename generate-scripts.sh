@@ -41,6 +41,7 @@ generate_run_script() {
     local auth_key_file=$(jq -r '.auth_key_file' <<<"$service_info")
     local include_ts=$(jq -r '.include_tailscale' <<<"$service_info")
     local include_npm=$(jq -r '.include_npm' <<<"$service_info")
+    local include_https=$(jq -r '.include_https // "no"' <<<"$service_info")
     local primary_port=$(jq -r '.primary_port' <<<"$service_info")
     
     # Load the run script template
@@ -58,7 +59,8 @@ generate_run_script() {
         "$include_ts" \
         "$include_npm" \
         "$primary_port" \
-        "$service_info")
+        "$service_info" \
+        "$include_https")
     
     # Write to file
     echo "$run_content" > "$service_dir/run.sh"

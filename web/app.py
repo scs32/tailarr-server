@@ -137,6 +137,9 @@ def install_form(name):
 <form method='post' action='/install'>
 <input type='hidden' name='service' value='{html.escape(name)}'>
 <p><label><input type='checkbox' name='tailscale' checked> Tailscale (own tailnet identity)</label></p>
+<p><label><input type='checkbox' name='https' checked> HTTPS via tailscale serve
+(https://{html.escape(name)}.&lt;tailnet&gt;.ts.net - needs HTTPS Certificates
+enabled once in the Tailscale admin console)</label></p>
 <p><label><input type='checkbox' name='npm'> Bundle Nginx Proxy Manager</label></p>
 <p><label>Tailscale auth key ({key_hint})<br>
 <input size=70 name='authkey' autocomplete='off'></label></p>
@@ -155,6 +158,7 @@ def do_install(form):
 
     tailscale = "yes" if "tailscale" in form else "no"
     npm = "yes" if "npm" in form else "no"
+    https = "yes" if ("https" in form and tailscale == "yes") else "no"
 
     auth_key_file = ""
     if tailscale == "yes":
@@ -191,6 +195,7 @@ def do_install(form):
         "restart_policy": spec.get("restart_policy", "unless-stopped"),
         "include_npm": npm,
         "include_tailscale": tailscale,
+        "include_https": https,
         "auth_key_file": auth_key_file,
         "base_path": PODS_DIR,
         "environment": env,

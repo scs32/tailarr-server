@@ -108,6 +108,7 @@ service_counts sonarr
     printf '1\n'                 # select sonarr
     printf 'yes\n'               # NPM
     printf 'yes\n'               # Tailscale
+    printf '\n'                  # HTTPS via tailscale serve (default yes)
     printf '\n'                  # base path (default)
     printf '1\n'                 # key mode: shared reusable key
     printf '%s\n' "$TEST_KEY"    # auth key (no key file exists yet)
@@ -145,6 +146,11 @@ if grep -q '[^.]ts\.net' "$SVC_DIR/run.sh" && ! grep -q 'DNSName' "$SVC_DIR/run.
     fail "run.sh fabricates a .ts.net FQDN instead of querying MagicDNS"
 fi
 pass "run.sh derives the FQDN from tailscale's DNSName"
+
+grep -q "TS_SERVE_CONFIG" "$SVC_DIR/run.sh" || fail "HTTPS=yes but no TS_SERVE_CONFIG in run.sh"
+grep -q '"Proxy": "http://127.0.0.1:8989"' "$SVC_DIR/run.sh" \
+    || fail "serve config does not proxy to the service port"
+pass "HTTPS via tailscale serve wired into the sidecar"
 
 run_generated "$SVC_DIR"
 pass "generated run.sh executes cleanly (stubbed podman, WAIT=0)"
@@ -204,6 +210,7 @@ service_counts lidarr
     printf '3\n'                 # select lidarr
     printf 'no\n'                # NPM
     printf 'yes\n'               # Tailscale
+    printf 'no\n'                # no HTTPS for this one
     printf '\n'                  # base path (default)
     printf '2\n'                 # key mode: fresh key per service
     printf '%s\n' "$TEST_KEY2"   # per-service auth key
