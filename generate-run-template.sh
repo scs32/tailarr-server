@@ -35,11 +35,13 @@ EOF
     # --- Tailscale sidecar ---
     if [[ "$include_ts" == "yes" ]]; then
         cat << EOF
-# The auth key is read from this file at runtime and is never stored
-# in this script or in saved configurations.
+# The auth key is read from this file at runtime and is never stored in
+# this script or in saved configurations. It is only needed for the FIRST
+# enrollment: afterwards the pod's identity lives in ./tailscale/ and a
+# spent or deleted key file is fine (single-use keys are supported).
 TS_AUTHKEY_FILE="$auth_key_file"
-if [ ! -f "\$TS_AUTHKEY_FILE" ]; then
-  echo "Error: Tailscale auth key file not found: \$TS_AUTHKEY_FILE" >&2
+if [ ! -f "\$TS_AUTHKEY_FILE" ] && [ ! -f "\$(pwd)/tailscale/tailscaled.state" ]; then
+  echo "Error: no auth key file (\$TS_AUTHKEY_FILE) and no existing Tailscale state in \$(pwd)/tailscale" >&2
   exit 1
 fi
 
@@ -50,13 +52,20 @@ podman run -d \\
   --cap-add NET_ADMIN --cap-add NET_RAW \\
   --device /dev/net/tun \\
   -v "\$(pwd)/tailscale:/var/lib/tailscale" \\
-  -e TS_AUTHKEY="\$(cat "\$TS_AUTHKEY_FILE")" \\
+  -e TS_AUTHKEY="\$(cat "\$TS_AUTHKEY_FILE" 2>/dev/null || true)" \\
   -e TS_STATE_DIR=/var/lib/tailscale \\
   -e TS_HOSTNAME="$service" \\
   $ts_image
 
 echo "Waiting for Tailscale..."
 sleep "\$WAIT"
+
+# Fail fast if the sidecar died (bad/spent auth key, missing /dev/net/tun...)
+if ! podman ps --format '{{.Names}}' | grep -q "^tailscale-$service\$"; then
+  echo "Error: Tailscale sidecar failed to start. Recent logs:" >&2
+  podman logs --tail 20 tailscale-$service >&2 || true
+  exit 1
+fi
 
 EOF
     fi

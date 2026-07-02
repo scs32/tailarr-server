@@ -58,9 +58,27 @@ with `-p`, like a conventional container.
   Debian container works and keeps the whole homelab in one disposable
   guest.
 - A [Tailscale auth key](https://login.tailscale.com/admin/settings/keys)
-  (reusable keys are convenient here) if you enable Tailscale. The wizard
-  stores it in `~/Pods/.tailscale_authkey` (mode 600); generated scripts
-  read it from that file at runtime and never embed it.
+  if you enable Tailscale (generate it with **Ephemeral: OFF** — ephemeral
+  nodes are auto-deleted when they go offline).
+
+### Auth key handling — a first-run choice
+
+The first Tailscale deployment asks how keys should be handled:
+
+1. **Shared reusable key** (convenient): one reusable key is stored in
+   `~/Pods/.tailscale_authkey` (mode 600) and every new service enrolls
+   with it automatically. Mitigate the standing-credential risk by
+   generating the key with a tag (e.g. `tag:pod`) and an ACL that lets
+   tagged devices accept connections but initiate none.
+2. **Fresh single-use key per service** (most secure): each deployment
+   prompts for a new one-off key, stored at
+   `~/Pods/<service>/.tailscale_authkey`. Keys are only needed for a
+   pod's FIRST enrollment - afterwards its identity persists in
+   `~/Pods/<service>/tailscale/` and the spent key file can be deleted.
+
+Generated scripts read the key from its file at runtime and never embed
+it. The choice is saved in `~/Pods/.tailscale_keymode`; delete that file
+to be asked again.
 
 ## How this compares
 

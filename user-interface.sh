@@ -186,6 +186,39 @@ confirm_configuration() {
     done
 }
 
+# Function to choose (once) how Tailscale auth keys are handled.
+# The choice is persisted; subsequent runs read it silently.
+# Echoes "shared" or "per-service".
+get_key_mode() {
+    local mode_file="$1"
+    local sel mode=""
+
+    if [[ -f "$mode_file" ]]; then
+        cat "$mode_file"
+        return 0
+    fi
+
+    ui_msg "\nHow should Tailscale auth keys be handled?\n"
+    ui_msg "  1) Store a ${BOLD}reusable${NC} key once - new services enroll automatically (convenient)\n"
+    ui_msg "  2) Ask for a ${BOLD}fresh single-use${NC} key for each service (most secure)\n"
+    while true; do
+        ui_msg "Key handling (1/2): "
+        read -r sel
+        [[ "$sel" == "q" ]] && return 2
+        case "$sel" in
+            1) mode="shared"; break ;;
+            2) mode="per-service"; break ;;
+            *) ui_msg "Please answer 1 or 2.\n" ;;
+        esac
+    done
+
+    mkdir -p "$(dirname "$mode_file")"
+    printf '%s\n' "$mode" > "$mode_file"
+    ui_msg "Choice saved to $mode_file (delete that file to be asked again)\n\n"
+
+    echo "$mode"
+}
+
 # Function to resolve the Tailscale auth key file.
 # The key itself is never returned or embedded anywhere; generated scripts
 # read it from this file at runtime. Echoes the key file path.

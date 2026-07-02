@@ -8,9 +8,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JSON_FILE="$SCRIPT_DIR/homelab.js"
 
-# Default paths
+# Default paths (TS_AUTHKEY_FILE overrides the shared key file location)
 DEFAULT_BASE_PATH="${BASE_PATH:-$HOME/Pods}"
-TS_AUTHKEY_FILE="${TS_AUTHKEY_FILE:-$HOME/Pods/.tailscale_authkey}"
+TS_AUTHKEY_FILE="${TS_AUTHKEY_FILE:-}"
 
 # Load components
 source "$SCRIPT_DIR/user-interface.sh"
@@ -41,18 +41,27 @@ main() {
     local tailscale_choice
     tailscale_choice=$(ask_yes_no "Would you like to enable Tailscale?" "yes") || { echo "Exiting..."; exit 0; }
 
-    # Step 4: Resolve Tailscale auth key file (if needed).
-    # Only the file path travels through the config; generated scripts read
-    # the key from this file at runtime.
-    local auth_key_file=""
-    if [[ "$tailscale_choice" == "yes" ]]; then
-        auth_key_file=$(get_auth_key_file "$TS_AUTHKEY_FILE") || { echo "Exiting..."; exit 0; }
-    fi
-
-    # Step 5: Get Base Path
+    # Step 4: Get Base Path (needed to place key files)
     echo "=== Path Configuration ==="
     local base_path
     base_path=$(get_input "Base path" "$DEFAULT_BASE_PATH") || { echo "Exiting..."; exit 0; }
+
+    # Step 5: Resolve Tailscale auth key file (if needed).
+    # First run asks whether to store one reusable key for all services or
+    # require a fresh single-use key per service. Only the file path travels
+    # through the config; generated scripts read the key at runtime.
+    local auth_key_file=""
+    if [[ "$tailscale_choice" == "yes" ]]; then
+        local key_mode
+        key_mode=$(get_key_mode "$base_path/.tailscale_keymode") || { echo "Exiting..."; exit 0; }
+        local key_file_default
+        if [[ "$key_mode" == "per-service" ]]; then
+            key_file_default="$base_path/$selected_service/.tailscale_authkey"
+        else
+            key_file_default="${TS_AUTHKEY_FILE:-$base_path/.tailscale_authkey}"
+        fi
+        auth_key_file=$(get_auth_key_file "$key_file_default") || { echo "Exiting..."; exit 0; }
+    fi
 
     # Step 6: Collect Environment Variables
     echo "=== Environment Variables ==="

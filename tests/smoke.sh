@@ -5,12 +5,14 @@
 # `podman` on PATH, then asserts on the generated scripts and executes them.
 # No real containers, network calls, or Tailscale connections are made.
 #
-# Pass 1: sonarr with NPM=yes, Tailscale=yes (auth key tskey-test-12345)
+# Pass 1: sonarr with NPM=yes, Tailscale=yes, shared key mode
 # Pass 2: radarr with NPM=no,  Tailscale=no  (ports must be published via -p)
+# Pass 3: lidarr with NPM=no,  Tailscale=yes, per-service key mode
 set -eu
 
 REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
 TEST_KEY="tskey-test-12345"
+TEST_KEY2="tskey-test-67890"
 
 fail() {
     echo "FAIL: $1" >&2
@@ -45,13 +47,19 @@ export HOME
 mkdir -p "$HOME"
 cd "$WORK"
 
-# --- Fake podman: logs every invocation, always succeeds, prints nothing ---
+# --- Fake podman: logs every invocation, always succeeds. `ps` lists the ---
+# --- names of containers previously started, so liveness checks pass.    ---
 mkdir -p "$WORK/bin"
 PODMAN_LOG="$WORK/podman.log"
 export PODMAN_LOG
 cat > "$WORK/bin/podman" << 'EOF'
 #!/bin/sh
 echo "podman $*" >> "${PODMAN_LOG:?}"
+case "${1:-}" in
+  ps)
+    grep -o "run -d --name [^ ]*" "$PODMAN_LOG" 2>/dev/null | awk '{print $4}' | sort -u
+    ;;
+esac
 exit 0
 EOF
 chmod +x "$WORK/bin/podman"
@@ -94,14 +102,15 @@ run_generated() {
 }
 
 # =========================================================================
-echo "=== Pass 1: sonarr (NPM=yes, Tailscale=yes) ==="
+echo "=== Pass 1: sonarr (NPM=yes, Tailscale=yes, shared key) ==="
 service_counts sonarr
 {
     printf '1\n'                 # select sonarr
     printf 'yes\n'               # NPM
     printf 'yes\n'               # Tailscale
-    printf '%s\n' "$TEST_KEY"    # auth key (no key file exists yet)
     printf '\n'                  # base path (default)
+    printf '1\n'                 # key mode: shared reusable key
+    printf '%s\n' "$TEST_KEY"    # auth key (no key file exists yet)
     blanks "$ENV_COUNT"          # env var defaults
     blanks "$VOL_COUNT"          # volume defaults
     printf '\n'                  # no more volumes
@@ -119,9 +128,10 @@ grep -q -- "--network container:tailscale-sonarr" "$SVC_DIR/run.sh" \
     || fail "run.sh does not share the Tailscale sidecar network namespace"
 pass "run.sh uses --network container:tailscale-sonarr"
 
-[ -f "$HOME/Pods/.tailscale_authkey" ] || fail "wizard did not store the auth key file"
+[ -f "$HOME/Pods/.tailscale_authkey" ] || fail "wizard did not store the shared auth key file"
 grep -q "$TEST_KEY" "$HOME/Pods/.tailscale_authkey" || fail "auth key file has wrong contents"
-pass "auth key stored in key file"
+grep -q "shared" "$HOME/Pods/.tailscale_keymode" || fail "key mode choice was not persisted"
+pass "shared key stored; key mode persisted"
 
 if grep -rq "$TEST_KEY" "$SVC_DIR" "$HOME/Pods/.configs" "$WORK/.last-config.json"; then
     fail "auth key leaked into generated files or saved configs"
@@ -151,7 +161,7 @@ service_counts radarr
 {
     printf '2\n'                 # select radarr
     printf 'no\n'                # NPM
-    printf 'no\n'                # Tailscale (no auth key prompt follows)
+    printf 'no\n'                # Tailscale (no key prompts follow)
     printf '\n'                  # base path (default)
     blanks "$ENV_COUNT"          # env var defaults
     blanks "$VOL_COUNT"          # volume defaults
@@ -184,6 +194,53 @@ if grep -q "run -d --name tailscale-radarr" "$PODMAN_LOG"; then
     fail "a tailscale sidecar was started despite Tailscale=no"
 fi
 pass "only the service container was started"
+
+# =========================================================================
+echo "=== Pass 3: lidarr (NPM=no, Tailscale=yes, per-service key) ==="
+: > "$PODMAN_LOG"
+rm -f "$HOME/Pods/.tailscale_keymode"   # trigger the first-run question again
+service_counts lidarr
+{
+    printf '3\n'                 # select lidarr
+    printf 'no\n'                # NPM
+    printf 'yes\n'               # Tailscale
+    printf '\n'                  # base path (default)
+    printf '2\n'                 # key mode: fresh key per service
+    printf '%s\n' "$TEST_KEY2"   # per-service auth key
+    blanks "$ENV_COUNT"          # env var defaults
+    blanks "$VOL_COUNT"          # volume defaults
+    printf '\n'                  # no more volumes
+    printf 'yes\n'               # confirm
+    printf 'yes\nyes\n'          # slack for any re-prompt
+} | run_wizard "$WORK/wizard-pass3.log"
+
+SVC_DIR="$HOME/Pods/lidarr"
+[ -f "$SVC_DIR/run.sh" ] || fail "missing generated file: $SVC_DIR/run.sh"
+
+[ -f "$SVC_DIR/.tailscale_authkey" ] || fail "per-service key file was not created"
+grep -q "$TEST_KEY2" "$SVC_DIR/.tailscale_authkey" || fail "per-service key file has wrong contents"
+grep -q "lidarr/.tailscale_authkey" "$SVC_DIR/run.sh" || fail "run.sh does not reference the per-service key file"
+pass "per-service key stored and referenced by run.sh"
+
+grep -q "$TEST_KEY2" "$HOME/Pods/.tailscale_authkey" \
+    && fail "per-service key leaked into the shared key file"
+for f in run.sh stop.sh remove.sh diagnose.sh; do
+    grep -q "$TEST_KEY2" "$SVC_DIR/$f" && fail "per-service key embedded in $f"
+done
+pass "per-service key not embedded in generated scripts or shared key file"
+
+grep -q "tailscaled.state" "$SVC_DIR/run.sh" \
+    || fail "run.sh does not tolerate a spent/deleted single-use key (no state fallback)"
+pass "run.sh accepts existing Tailscale state in place of a key file"
+
+run_generated "$SVC_DIR"
+pass "per-service run.sh executes cleanly (stubbed podman, WAIT=0)"
+
+# Spent-key scenario: delete the key file; state exists -> must still run
+mkdir -p "$SVC_DIR/tailscale" && touch "$SVC_DIR/tailscale/tailscaled.state"
+rm -f "$SVC_DIR/.tailscale_authkey"
+run_generated "$SVC_DIR"
+pass "run.sh still works after the single-use key file is deleted (state present)"
 
 echo ""
 echo "SMOKE TEST PASSED"
