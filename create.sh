@@ -38,6 +38,12 @@ main() {
     # Generate all management scripts
     source "$SCRIPT_DIR/generate-scripts.sh"
     generate_all_scripts "$service_info"
+
+    # Persist the parsed config beside the scripts (no secrets - the auth
+    # key travels as a file path only). Used by update tooling.
+    local service_dir
+    service_dir=$(jq -r '.service_dir' <<<"$service_info")
+    echo "$service_info" > "$service_dir/.config.json"
     
     # Display completion message
     source "$SCRIPT_DIR/display-summary.sh"

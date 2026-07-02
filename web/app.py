@@ -77,7 +77,8 @@ def dashboard():
             f"<input type='hidden' name='service' value='{html.escape(name)}'>"
             f"<button name='do' value='start'>start</button> "
             f"<button name='do' value='stop'>stop</button> "
-            f"<button name='do' value='logs'>logs</button></form>"
+            f"<button name='do' value='logs'>logs</button> "
+            f"<button name='do' value='update'>update</button></form>"
         )
         rows.append(
             f"<tr><td>{html.escape(name)}</td><td>{state}</td><td>{buttons}</td></tr>"
@@ -107,8 +108,64 @@ def dashboard():
 
     return page(
         "Podscale",
-        f"<h2>Deployed</h2>{deployed_html}<h2>Catalog</h2>{catalog_html}",
+        f"<h2>Deployed</h2>{deployed_html}<h2>Catalog</h2>{catalog_html}"
+        "<p><a href='/custom'>+ Custom pod</a> (any OCI image)</p>",
     )
+
+
+def custom_form():
+    body = f"""
+<form method='post' action='/install'>
+<input type='hidden' name='custom' value='1'>
+<p><label>Name (a-z, 0-9, dashes) <input name='service' required></label></p>
+<p><label>Image <input size=60 name='image' required
+placeholder='ghcr.io/someone/thing:latest'></label></p>
+<p><label>Command (optional) <input size=40 name='command'
+placeholder='e.g. sleep infinity'></label></p>
+<p><label>Ports, one host:container per line<br>
+<textarea name='ports' rows=2 cols=30 placeholder='8080:8080'></textarea></label></p>
+<p><label>Environment, one KEY=value per line<br>
+<textarea name='envlines' rows=3 cols=40></textarea></label></p>
+<p><label>Volumes, one /container/path=/host/path per line<br>
+<textarea name='vollines' rows=3 cols=60
+placeholder='/config={html.escape(PODS_DIR)}/&lt;name&gt;/config'></textarea></label></p>
+<p><label><input type='checkbox' name='tailscale' checked> Tailscale (own tailnet identity)</label></p>
+<p><label><input type='checkbox' name='https' checked> HTTPS via tailscale serve (first port)</label></p>
+<p><label>Tailscale auth key <input size=70 name='authkey' autocomplete='off'></label></p>
+<p><button>Install</button></p>
+</form>"""
+    return page("Custom pod", body)
+
+
+def parse_custom_spec(form, name):
+    ports = {}
+    for line in form.get("ports", [""])[0].splitlines():
+        line = line.strip()
+        if ":" in line:
+            host, _, cont = line.partition(":")
+            ports[host.strip()] = cont.strip()
+    env = {}
+    for line in form.get("envlines", [""])[0].splitlines():
+        if "=" in line:
+            k, _, v = line.partition("=")
+            env[k.strip()] = v.strip()
+    volumes = {}
+    for line in form.get("vollines", [""])[0].splitlines():
+        if "=" in line:
+            cpath, _, hpath = line.partition("=")
+            cpath, hpath = cpath.strip(), hpath.strip()
+            if cpath.startswith("/") and hpath.startswith("/"):
+                volumes[cpath] = hpath
+    return {
+        "name": name,
+        "image": form.get("image", [""])[0].strip(),
+        "network_mode": "bridge",
+        "restart_policy": "unless-stopped",
+        "ports": ports,
+        "environment": env,
+        "volumes": volumes,
+        "command": form.get("command", [""])[0].strip(),
+    }
 
 
 def install_form(name):
@@ -151,8 +208,16 @@ enabled once in the Tailscale admin console)</label></p>
 
 
 def do_install(form):
-    name = form.get("service", [""])[0]
-    spec = load_services().get(name)
+    name = form.get("service", [""])[0].strip()
+    if "custom" in form:
+        import re
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
+            return page("Error", "<p>Invalid name (a-z, 0-9, dashes).</p>")
+        spec = parse_custom_spec(form, name)
+        if not spec["image"]:
+            return page("Error", "<p>An image is required.</p>")
+    else:
+        spec = load_services().get(name)
     if not spec:
         return page("Error", "<p>Unknown service.</p>")
 
@@ -172,16 +237,20 @@ def do_install(form):
         elif not os.path.isfile(auth_key_file):
             return page("Error", "<p>Tailscale enabled but no auth key given.</p>")
 
-    env = {
-        k[len("env."):]: v[0]
-        for k, v in form.items()
-        if k.startswith("env.")
-    }
-    volumes = {
-        k[len("vol."):]: v[0]  # container path -> host path (engine order)
-        for k, v in form.items()
-        if k.startswith("vol.")
-    }
+    if "custom" in form:
+        env = spec["environment"]
+        volumes = spec["volumes"]
+    else:
+        env = {
+            k[len("env."):]: v[0]
+            for k, v in form.items()
+            if k.startswith("env.")
+        }
+        volumes = {
+            k[len("vol."):]: v[0]  # container path -> host path (engine order)
+            for k, v in form.items()
+            if k.startswith("vol.")
+        }
 
     network_mode = (
         f"service:tailscale-{name}" if tailscale == "yes"
@@ -200,6 +269,7 @@ def do_install(form):
         "base_path": PODS_DIR,
         "environment": env,
         "volumes": volumes,
+        "command": spec.get("command", ""),
     }
 
     result = subprocess.run(
@@ -247,6 +317,21 @@ def do_action(form):
         )
     elif action == "logs":
         r = podman("logs", "--tail", "100", name, timeout=30)
+    elif action == "update":
+        # Pull the current image tag, then recreate the pod from run.sh.
+        cfg_path = os.path.join(svc_dir, ".config.json")
+        try:
+            image = json.load(open(cfg_path))["image"]
+        except (OSError, ValueError, KeyError):
+            return page("Error", "<p>No .config.json for this pod (redeploy once to create it).</p>")
+        pull = podman("pull", image, timeout=600)
+        if pull.returncode != 0:
+            return page(f"update {name}: pull failed",
+                        f"<pre>{html.escape(pull.stdout + pull.stderr)}</pre>")
+        r = subprocess.run(
+            ["sh", "./run.sh"], cwd=svc_dir, capture_output=True, text=True,
+            timeout=600,
+        )
     else:
         return page("Error", "<p>Unknown action.</p>")
 
@@ -270,6 +355,8 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path == "/install":
             q = urllib.parse.parse_qs(url.query)
             self._send(install_form(q.get("service", [""])[0]))
+        elif url.path == "/custom":
+            self._send(custom_form())
         else:
             self._send(page("Not found", ""), 404)
 
