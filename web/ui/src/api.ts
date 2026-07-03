@@ -7,10 +7,14 @@ import type {
   Info,
   InstallRequest,
   InstallResult,
+  NetworkEntry,
   Pod,
+  PodConfigResult,
+  ReconfigureRequest,
   Share,
   ShareResult,
   Source,
+  UpdatesInfo,
 } from "./types";
 
 async function getJSON<T>(path: string): Promise<T> {
@@ -38,8 +42,25 @@ export const api = {
 
   logs: (name: string) => getJSON<ActionResult>(`/api/pods/${name}/logs`),
 
-  action: (name: string, action: "start" | "stop" | "update") =>
+  action: (name: string, action: "start" | "stop" | "update" | "remove") =>
     postJSON<ActionResult>(`/api/pods/${name}/action`, { do: action }),
+
+  podConfig: (name: string) =>
+    getJSON<PodConfigResult>(`/api/pods/${name}/config`),
+
+  reconfigure: (name: string, body: ReconfigureRequest) =>
+    postJSON<ActionResult>(`/api/pods/${name}/config`, body),
+
+  updates: () => getJSON<UpdatesInfo>("/api/updates"),
+
+  updatesRefresh: () =>
+    postJSON<{ ok: boolean; status: string }>("/api/updates/refresh", {}),
+
+  network: () =>
+    getJSON<{ network: NetworkEntry[] }>("/api/network").then((d) => d.network),
+
+  networkSet: (pod: string, body: { tailscale?: boolean; https?: boolean }) =>
+    postJSON<ActionResult>(`/api/network/${pod}`, body),
 
   install: (req: InstallRequest) =>
     postJSON<InstallResult>("/api/install", req),

@@ -1,6 +1,6 @@
 // Shapes returned by the controller JSON API (web/app.py).
 
-export type PodState = "running" | "stopped";
+export type PodState = "running" | "stopped" | "error";
 
 export interface Pod {
   name: string;
@@ -10,6 +10,62 @@ export interface Pod {
   tailscale: boolean;
   https: boolean;
   shares: string[];
+  update: boolean; // newer image available (daily digest check)
+}
+
+// GET /api/network — per-pod networking settings + live tailnet identity.
+export interface NetworkEntry {
+  name: string;
+  controller: boolean;
+  state: PodState;
+  tailscale: boolean;
+  https: boolean;
+  network_mode: string;
+  ports: Record<string, string>;
+  ip: string; // tailnet IPv4, "" when sidecar not running
+  dns_name: string; // MagicDNS name, "" when unknown
+}
+
+export interface UpdatesInfo {
+  checking: boolean;
+  checked: number; // epoch seconds of last completed check
+  images: Record<string, { update: boolean; error: string | null }>;
+}
+
+// Editable config for a deployed pod (GET /api/pods/<name>/config).
+export interface PodConfig {
+  image: string;
+  command: string;
+  ports: Record<string, string>;
+  environment: Record<string, string>;
+  volumes: Record<string, string>;
+  memory_limit: string;
+  tailscale: boolean;
+  https: boolean;
+  shares: string[];
+  controller: boolean;
+}
+
+export interface PodConfigResult {
+  ok: boolean;
+  name: string;
+  error: string | null;
+  config: PodConfig | null;
+}
+
+// POST /api/pods/<name>/config body. pull=true pulls the newest image tag
+// before recreating ("Update"); pull=false recreates as-is ("Reload").
+export interface ReconfigureRequest {
+  image: string;
+  command: string;
+  ports: Record<string, string>;
+  environment: Record<string, string>;
+  volumes: Record<string, string>;
+  memory_limit: string;
+  tailscale: boolean;
+  https: boolean;
+  shares: string[];
+  pull: boolean;
 }
 
 export interface CatalogItem {
@@ -21,6 +77,7 @@ export interface CatalogItem {
   volumes: Record<string, string>;
   command: string;
   installed: boolean;
+  state: PodState | ""; // "" when not installed
   source: string; // "built-in" or a source name
 }
 

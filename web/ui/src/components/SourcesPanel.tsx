@@ -4,6 +4,7 @@ import { api } from "../api";
 import { Field } from "./Form";
 import { Alert } from "./Alert";
 
+// Rendered inside the catalog's Sources modal (the modal owns the title).
 export function SourcesPanel({
   sources,
   onChanged,
@@ -40,9 +41,8 @@ export function SourcesPanel({
   }
 
   return (
-    <div className="form-section" style={{ maxWidth: 640 }}>
-      <h3>Catalog sources</h3>
-      <p className="field__hint" style={{ marginTop: 0 }}>
+    <>
+      <p className="field__hint" style={{ margin: "0 0 var(--sp-4)" }}>
         Add a URL to an external catalog (homelab.js JSON schema). Its services
         appear in the catalog alongside the built-in ones.
       </p>
@@ -54,34 +54,18 @@ export function SourcesPanel({
       )}
 
       {sources.length > 0 && (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "var(--sp-2)",
-            marginBottom: "var(--sp-4)",
-          }}
-        >
+        <div className="row-list" style={{ marginBottom: "var(--sp-5)" }}>
           {sources.map((s) => (
-            <div
-              key={s.name}
-              className="card"
-              style={{
-                padding: "var(--sp-3)",
-                display: "flex",
-                alignItems: "center",
-                gap: "var(--sp-3)",
-              }}
-            >
+            <div key={s.name} className="row card">
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontWeight: "var(--fw-medium)" }}>{s.name}</div>
-                <div className="catalog-card__meta" style={{ margin: 0 }}>
+                <div className="row__title">{s.name}</div>
+                <div className="row__meta" title={s.url}>
                   {s.url}
                 </div>
               </div>
               <div className="spacer" />
               {s.error ? (
-                <span className="badge badge--error" title={s.error}>
+                <span className="chip" style={{ color: "var(--danger)" }} title={s.error}>
                   error
                 </span>
               ) : (
@@ -121,6 +105,6 @@ export function SourcesPanel({
       >
         Add source
       </button>
-    </div>
+    </>
   );
 }

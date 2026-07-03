@@ -3,14 +3,18 @@ import type { Pod } from "../types";
 import { api } from "../api";
 import { PodGlyph, SpinnerIcon } from "./Icons";
 
+// State is conveyed by the card tint (green running / amber stopped / red
+// crashed) — see .pod-card--* in the stylesheet. No badge.
 export function PodCard({
   pod,
   onChanged,
   onLogs,
+  onEdit,
 }: {
   pod: Pod;
   onChanged: () => void;
   onLogs: (name: string) => void;
+  onEdit: (name: string) => void;
 }) {
   const [busy, setBusy] = useState<"" | "start" | "stop" | "update">("");
 
@@ -25,21 +29,21 @@ export function PodCard({
   }
 
   const running = pod.state === "running";
-  const badge = running ? "badge--running" : "badge--stopped";
-  const label = running ? "Running" : "Stopped";
 
   return (
-    <div className="pod-card card">
+    <div className={`pod-card card pod-card--${pod.state}`}>
       <div className="pod-card__head">
         <div className="pod-icon">
           <PodGlyph />
         </div>
-        <div>
+        <div className="pod-card__info">
           <div className="pod-card__title">{pod.name}</div>
-          {pod.image && <div className="pod-card__url">{pod.image}</div>}
+          {pod.image && (
+            <div className="pod-card__url" title={pod.image}>
+              {pod.image}
+            </div>
+          )}
         </div>
-        <div className="spacer" />
-        <span className={`badge ${badge}`}>{label}</span>
       </div>
 
       <div className="pod-card__foot">
@@ -67,18 +71,27 @@ export function PodCard({
           Logs
         </button>
         <button
-          className={"btn btn--ghost btn--sm" + (busy === "update" ? " btn--loading" : "")}
-          disabled={!!busy}
-          onClick={() => run("update")}
+          className="btn btn--ghost btn--sm"
+          disabled={!!busy || pod.controller}
+          title={
+            pod.controller
+              ? "The controller can't reconfigure itself"
+              : "Edit config, then reload or update"
+          }
+          onClick={() => onEdit(pod.name)}
         >
-          {busy === "update" && <SpinnerIcon className="btn-icon" />}
-          Update
+          Edit
         </button>
-        {pod.shares.length > 0 && (
-          <>
-            <div className="spacer" />
-            <span className="preview-label">{pod.shares.join(", ")}</span>
-          </>
+        {pod.update && (
+          <button
+            className={"btn btn--secondary btn--sm" + (busy === "update" ? " btn--loading" : "")}
+            disabled={!!busy}
+            title="A newer image is available — pull it and recreate the pod"
+            onClick={() => run("update")}
+          >
+            {busy === "update" && <SpinnerIcon className="btn-icon" />}
+            Update
+          </button>
         )}
       </div>
     </div>

@@ -18,7 +18,8 @@ RUN npm run build
 # ---- Stage 2: runtime ----------------------------------------------------
 FROM docker.io/library/alpine:3.20
 
-RUN apk add --no-cache bash jq python3 podman
+# skopeo: remote digest lookups for the daily image-update checks
+RUN apk add --no-cache bash jq python3 podman skopeo
 
 WORKDIR /app
 COPY create.sh error-handler.sh logging-utils.sh parse-service-config.sh \

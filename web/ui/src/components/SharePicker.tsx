@@ -26,7 +26,8 @@ export function SharePicker({
           <label
             key={s.name}
             className="toggle"
-            style={{ marginBottom: "var(--sp-3)", alignItems: "flex-start" }}
+            // one share per line (.toggle is inline-flex by default)
+            style={{ display: "flex", marginBottom: "var(--sp-3)", alignItems: "flex-start" }}
           >
             <input
               type="checkbox"

@@ -4,6 +4,7 @@ import type { Pod } from "../types";
 import { api } from "../api";
 import { PodCard } from "../components/PodCard";
 import { LogsModal } from "../components/LogsModal";
+import { EditModal } from "../components/EditModal";
 import { Alert } from "../components/Alert";
 import { GridIcon } from "../components/Icons";
 
@@ -11,6 +12,7 @@ export function Dashboard() {
   const [pods, setPods] = useState<Pod[] | null>(null);
   const [error, setError] = useState<string>("");
   const [logsFor, setLogsFor] = useState<string | null>(null);
+  const [editFor, setEditFor] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -64,12 +66,25 @@ export function Dashboard() {
       ) : (
         <div className="grid">
           {pods?.map((pod) => (
-            <PodCard key={pod.name} pod={pod} onChanged={refresh} onLogs={setLogsFor} />
+            <PodCard
+              key={pod.name}
+              pod={pod}
+              onChanged={refresh}
+              onLogs={setLogsFor}
+              onEdit={setEditFor}
+            />
           ))}
         </div>
       )}
 
       {logsFor && <LogsModal name={logsFor} onClose={() => setLogsFor(null)} />}
+      {editFor && (
+        <EditModal
+          name={editFor}
+          onClose={() => setEditFor(null)}
+          onChanged={refresh}
+        />
+      )}
     </>
   );
 }

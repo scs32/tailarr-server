@@ -1,11 +1,19 @@
 import { NavLink } from "react-router-dom";
-import { GridIcon, StoreIcon, PlusIcon, ShareIcon, GearIcon } from "./Icons";
+import {
+  GridIcon,
+  StoreIcon,
+  PlusIcon,
+  ShareIcon,
+  NetworkIcon,
+  GearIcon,
+} from "./Icons";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: GridIcon, end: true },
   { to: "/catalog", label: "Catalog", icon: StoreIcon },
   { to: "/custom", label: "Custom pod", icon: PlusIcon },
   { to: "/shares", label: "Shares", icon: ShareIcon },
+  { to: "/network", label: "Network", icon: NetworkIcon },
 ];
 
 export function Sidebar() {

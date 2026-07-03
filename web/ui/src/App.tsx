@@ -5,6 +5,7 @@ import { Catalog } from "./pages/Catalog";
 import { InstallForm } from "./pages/InstallForm";
 import { CustomPod } from "./pages/CustomPod";
 import { Shares } from "./pages/Shares";
+import { Network } from "./pages/Network";
 
 function Layout() {
   return (
@@ -17,6 +18,7 @@ function Layout() {
           <Route path="/install/:name" element={<InstallForm />} />
           <Route path="/custom" element={<CustomPod />} />
           <Route path="/shares" element={<Shares />} />
+          <Route path="/network" element={<Network />} />
           <Route path="*" element={<Dashboard />} />
         </Routes>
       </main>

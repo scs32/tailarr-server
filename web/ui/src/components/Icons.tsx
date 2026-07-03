@@ -65,3 +65,16 @@ export const SearchIcon = (p: SVGProps<SVGSVGElement>) => (
     <path d="M21 21l-4.3-4.3" />
   </svg>
 );
+
+export const RefreshIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}>
+    <path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6" />
+  </svg>
+);
+
+export const NetworkIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
+  </svg>
+);

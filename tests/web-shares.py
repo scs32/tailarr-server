@@ -88,6 +88,79 @@ check("Unknown pod or share" in app.op_attach("nope", "media")["error"],
 # --- usage shows in status; delete works ---
 status = {s["name"]: s for s in app.status_shares()}
 check("testpod" in status["media"]["used_by"], "status shows pod usage")
+
+# --- edit popup: GET config (op_pod_config) is podman-free ---
+cfg = app.op_pod_config("testpod")
+check(cfg["ok"] and cfg["config"]["image"] == "docker.io/alpine:latest",
+      "pod config returns the saved image")
+check(sorted(cfg["config"]["shares"]) == ["archive", "media"],
+      "pod config lists both attached shares")
+check(cfg["config"]["volumes"] == {"/config": f"{pods}/testpod/config"},
+      "pod config strips share-driven volumes (shown via the shares list)")
+check(app.op_pod_config("nope")["error"] == "Unknown service.",
+      "pod config: unknown pod rejected")
+
+# --- edit popup: reconfigure re-renders from edits, then applies via run.sh.
+# Stub podman so run.sh succeeds without a real runtime (Reload = no pull). ---
+stub_dir = tempfile.mkdtemp()
+with open(os.path.join(stub_dir, "podman"), "w") as f:
+    f.write("#!/bin/sh\nexit 0\n")
+os.chmod(os.path.join(stub_dir, "podman"), 0o755)
+os.environ["PATH"] = stub_dir + os.pathsep + os.environ["PATH"]
+
+r = app.op_reconfigure("testpod", {
+    "image": "docker.io/alpine:3.20", "command": "sleep infinity",
+    "ports": {"8080": "8080"}, "environment": {"TZ": "UTC"},
+    "volumes": {"/config": f"{pods}/testpod/config"},
+    "memory_limit": "", "tailscale": False, "https": False,
+    "shares": ["media"], "pull": False,
+})
+check(r["ok"], "reconfigure (Reload) succeeds")
+info = app.pod_config("testpod")
+check(info["image"] == "docker.io/alpine:3.20", "reconfigure updated the image")
+check(info["environment"] == {"TZ": "UTC"}, "reconfigure updated the environment")
+check(info["shares"] == ["media"], "reconfigure dropped the archive share")
+check(info["volumes"] == {"/config": f"{pods}/testpod/config", "/data": "/data"},
+      "reconfigure kept the media mount and dropped the archive mount")
+check(app.op_reconfigure("nope", {})["error"] == "Unknown service.",
+      "reconfigure: unknown pod rejected")
+
+# a deployed controller-named pod must refuse to recreate itself
+app.op_install({
+    "name": "homepod", "custom": True, "image": "docker.io/alpine:latest",
+    "command": "sleep infinity", "ports": {}, "environment": {}, "volumes": {},
+    "network_mode": "bridge", "restart_policy": "unless-stopped",
+    "shares": [], "tailscale": False, "https": False, "authkey": "",
+})
+check(app.op_reconfigure("homepod", {})["status"] == "refused",
+      "reconfigure: controller refuses to recreate itself")
+
+# --- pod state: stubbed podman ps -a returns nothing -> everything stopped ---
+pods_status = {p["name"]: p for p in app.status_pods()}
+check(pods_status["testpod"]["state"] == "stopped", "status: never-started pod is stopped")
+check(pods_status["testpod"]["update"] is False, "status: no update flagged without cache")
+check(app.pod_state("x", {"x": ("exited", 3)}) == "error", "pod_state: non-zero exit = error")
+check(app.pod_state("x", {"x": ("running", 0)}) == "running", "pod_state: running")
+check(app.pod_state("x", {}) == "stopped", "pod_state: absent container = stopped")
+
+# --- network status + set ---
+net = {e["name"]: e for e in app.status_network()}
+check(net["testpod"]["tailscale"] is False and net["testpod"]["ip"] == "",
+      "network: non-ts pod listed without identity")
+r = app.op_network_set("testpod", {"https": False})
+check(r["ok"], "network set: re-render succeeds")
+check(app.op_network_set("homepod", {})["status"] == "refused",
+      "network set: controller refused")
+check(app.op_network_set("nope", {})["error"] == "Unknown service.",
+      "network set: unknown pod rejected")
+
+# --- remove: refuses controller, deletes a normal pod's dir ---
+check(app.op_action("homepod", "remove")["status"] == "refused",
+      "remove: controller refused")
+r = app.op_action("testpod", "remove")
+check(r["ok"], "remove succeeds")
+check("testpod" not in app.deployed_services(), "remove deletes the pod dir")
+
 r = app.op_share_delete("archive")
 check(r["ok"] and "Deleted share" in r["message"]
       and "archive" not in app.load_shares(), "delete works")

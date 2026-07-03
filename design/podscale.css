@@ -145,11 +145,12 @@ a:hover { text-decoration: underline; }
    ========================================================= */
 .badge {
   display: inline-flex; align-items: center; gap: 6px;
-  font-size: var(--fs-xs); font-weight: var(--fw-bold);
+  font-size: var(--fs-xs); font-weight: var(--fw-bold); line-height: 1;
   padding: 3px 9px 3px 8px; border-radius: var(--radius-full);
   border: 1px solid transparent; letter-spacing: .01em;
+  white-space: nowrap; flex: none; align-self: center;
 }
-.badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.badge::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .badge--running { color: var(--ok);     background: var(--ok-tint);     border-color: rgba(52,211,153,.3); }
 .badge--stopped { color: var(--faint);  background: rgba(100,116,139,.14); border-color: var(--border); }
 .badge--stopped::before { box-shadow: none; }
@@ -171,17 +172,53 @@ a:hover { text-decoration: underline; }
 
 .pod-card { padding: var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-4); transition: border-color .12s; }
 .pod-card:hover { border-color: var(--border); }
-.pod-card__head { display: flex; align-items: flex-start; gap: var(--sp-3); }
+
+/* State color coding (dashboard + catalog cards):
+   green = installed & running, amber = installed & stopped, red = crashed. */
+.pod-card--running, .catalog-card--running {
+  background: linear-gradient(180deg, rgba(52,211,153,.10), rgba(52,211,153,.04)), var(--surface);
+  border-color: rgba(52,211,153,.30);
+}
+.pod-card--running:hover, .catalog-card--running:hover { border-color: rgba(52,211,153,.5); }
+.pod-card--stopped, .catalog-card--stopped {
+  background: linear-gradient(180deg, rgba(251,191,36,.10), rgba(251,191,36,.04)), var(--surface);
+  border-color: rgba(251,191,36,.28);
+}
+.pod-card--stopped:hover, .catalog-card--stopped:hover { border-color: rgba(251,191,36,.5); }
+.pod-card--error, .catalog-card--error {
+  background: linear-gradient(180deg, rgba(248,113,113,.12), rgba(248,113,113,.05)), var(--surface);
+  border-color: rgba(248,113,113,.36);
+}
+.pod-card--error:hover, .catalog-card--error:hover { border-color: rgba(248,113,113,.55); }
+
+/* Compact row lists (shares, sources, network) */
+.row-list { display: flex; flex-direction: column; gap: var(--sp-2); }
+.row { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4); }
+.row__title { font-weight: var(--fw-medium); }
+.row__meta {
+  font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; /* long URLs/paths ellipsize */
+}
+.row__meta a { color: inherit; text-decoration: none; }
+.row__meta a:hover { color: var(--accent); text-decoration: underline; }
+
+/* Small state dot (network page) */
+.state-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.state-dot--running { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.state-dot--stopped { background: var(--warn); }
+.state-dot--error   { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+.pod-card__head { display: flex; align-items: center; gap: var(--sp-3); }
 .pod-icon {
   width: 40px; height: 40px; border-radius: 9px; flex: none;
   display: grid; place-items: center; background: var(--surface-2);
   border: 1px solid var(--border); color: var(--accent);
 }
 .pod-icon svg { width: 22px; height: 22px; }
+.pod-card__info { flex: 1; min-width: 0; }
 .pod-card__title { font-weight: var(--fw-bold); font-size: var(--fs-lg); letter-spacing: -0.01em; }
 .pod-card__url {
   font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--muted);
-  display: inline-flex; align-items: center; gap: 5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; /* tooltip shows the full name */
 }
 .pod-card__url:hover { color: var(--accent); }
 .pod-card__foot { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
@@ -261,6 +298,13 @@ a:hover { text-decoration: underline; }
    Confirm dialog
    ========================================================= */
 .scrim { position: fixed; inset: 0; background: rgba(2,6,15,.72); display: grid; place-items: center; padding: var(--sp-4); }
+.modal {
+  background: var(--surface); border: 1px solid var(--border-soft);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  width: min(560px, 100%); max-height: 88vh; overflow: auto; padding: var(--sp-5);
+}
+.modal__head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-4); }
+.modal__title { font-weight: var(--fw-bold); font-size: var(--fs-lg); letter-spacing: -0.01em; }
 .dialog { width: min(440px, 100%); padding: var(--sp-6); box-shadow: var(--shadow-lg); }
 .dialog__title { font-size: var(--fs-lg); font-weight: var(--fw-bold); margin: 0 0 var(--sp-2); }
 .dialog__body { color: var(--muted); font-size: var(--fs-sm); margin: 0 0 var(--sp-5); }

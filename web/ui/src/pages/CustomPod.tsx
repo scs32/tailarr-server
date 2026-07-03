@@ -5,26 +5,7 @@ import { api } from "../api";
 import { Field, FormSection, Toggle } from "../components/Form";
 import { SharePicker } from "../components/SharePicker";
 import { InstallResultView } from "../components/InstallResultView";
-
-function parsePairs(text: string, sep: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const line of text.split("\n")) {
-    const i = line.indexOf(sep);
-    if (i === -1) continue;
-    const k = line.slice(0, i).trim();
-    const v = line.slice(i + sep.length).trim();
-    if (k) out[k] = v;
-  }
-  return out;
-}
-
-function parseVolumes(text: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [cpath, hpath] of Object.entries(parsePairs(text, "="))) {
-    if (cpath.startsWith("/") && hpath.startsWith("/")) out[cpath] = hpath;
-  }
-  return out;
-}
+import { parsePairs, parseVolumes } from "../lib/pairs";
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 
