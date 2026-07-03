@@ -5,9 +5,9 @@
 # `podman` on PATH, then asserts on the generated scripts and executes them.
 # No real containers, network calls, or Tailscale connections are made.
 #
-# Pass 1: sonarr with NPM=yes, Tailscale=yes, shared key mode
-# Pass 2: radarr with NPM=no,  Tailscale=no  (ports must be published via -p)
-# Pass 3: lidarr with NPM=no,  Tailscale=yes, per-service key mode
+# Pass 1: sonarr with Tailscale=yes, shared key mode
+# Pass 2: radarr with Tailscale=no  (ports must be published via -p)
+# Pass 3: lidarr with Tailscale=yes, per-service key mode
 set -eu
 
 REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
@@ -102,11 +102,10 @@ run_generated() {
 }
 
 # =========================================================================
-echo "=== Pass 1: sonarr (NPM=yes, Tailscale=yes, shared key) ==="
+echo "=== Pass 1: sonarr (Tailscale=yes, shared key) ==="
 service_counts sonarr
 {
     printf '1\n'                 # select sonarr
-    printf 'yes\n'               # NPM
     printf 'yes\n'               # Tailscale
     printf '\n'                  # HTTPS via tailscale serve (default yes)
     printf '\n'                  # base path (default)
@@ -156,17 +155,20 @@ run_generated "$SVC_DIR"
 pass "generated run.sh executes cleanly (stubbed podman, WAIT=0)"
 
 grep -q "run -d --name tailscale-sonarr" "$PODMAN_LOG" || fail "tailscale sidecar was not started"
-grep -q "run -d --name npm-sonarr" "$PODMAN_LOG" || fail "NPM container was not started"
 grep -q "run -d --name sonarr" "$PODMAN_LOG" || fail "service container was not started"
-pass "run.sh started tailscale sidecar, NPM, and service"
+pass "run.sh started tailscale sidecar and service"
+
+if grep -q "npm-sonarr" "$SVC_DIR/run.sh" "$SVC_DIR/stop.sh" "$SVC_DIR/remove.sh" "$PODMAN_LOG"; then
+    fail "NPM is deprecated but still referenced in generated scripts"
+fi
+pass "no NPM references in generated scripts (deprecated)"
 
 # =========================================================================
-echo "=== Pass 2: radarr (NPM=no, Tailscale=no) ==="
+echo "=== Pass 2: radarr (Tailscale=no) ==="
 : > "$PODMAN_LOG"
 service_counts radarr
 {
     printf '2\n'                 # select radarr
-    printf 'no\n'                # NPM
     printf 'no\n'                # Tailscale (no key prompts follow)
     printf '\n'                  # base path (default)
     blanks "$ENV_COUNT"          # env var defaults
@@ -202,13 +204,12 @@ fi
 pass "only the service container was started"
 
 # =========================================================================
-echo "=== Pass 3: lidarr (NPM=no, Tailscale=yes, per-service key) ==="
+echo "=== Pass 3: lidarr (Tailscale=yes, per-service key) ==="
 : > "$PODMAN_LOG"
 rm -f "$HOME/Pods/.tailscale_keymode"   # trigger the first-run question again
 service_counts lidarr
 {
     printf '3\n'                 # select lidarr
-    printf 'no\n'                # NPM
     printf 'yes\n'               # Tailscale
     printf 'no\n'                # no HTTPS for this one
     printf '\n'                  # base path (default)

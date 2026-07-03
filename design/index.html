@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Podscale — design system (Tailnet theme)</title>
+<link rel="stylesheet" href="podscale.css">
+</head>
+<body>
+<div class="shell">
+
+  <!-- ============ Sidebar / nav ============ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand__mark"></div>
+      <div class="brand__name">Pod<span>scale</span></div>
+    </div>
+    <a class="nav-item nav-item--active">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      Dashboard
+    </a>
+    <a class="nav-item">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9h18M9 21V9"/><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+      Catalog
+    </a>
+    <a class="nav-item">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+      Custom pod
+    </a>
+    <a class="nav-item">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l10-10a2 2 0 0 0-4-4L4 16v4z"/></svg>
+      Shares
+    </a>
+    <div class="spacer"></div>
+    <a class="nav-item">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-2.82 1.17V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      Settings
+    </a>
+  </aside>
+
+  <!-- ============ Main ============ -->
+  <main class="main">
+    <h1 class="page-title">Dashboard</h1>
+    <p style="color:var(--muted);margin:0 0 var(--sp-2)">6 pods · 5 running · every service on its own tailnet identity</p>
+
+    <!-- Deployed pods -->
+    <div class="section-title">Deployed</div>
+    <div class="grid">
+
+      <div class="pod-card card">
+        <div class="pod-card__head">
+          <div class="pod-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+          </div>
+          <div>
+            <div class="pod-card__title">sonarr</div>
+            <a class="pod-card__url">sonarr.tailde95ff.ts.net ↗</a>
+          </div>
+          <div class="spacer"></div>
+          <span class="badge badge--running">Running</span>
+        </div>
+        <div class="pod-card__foot">
+          <button class="btn btn--secondary btn--sm">Stop</button>
+          <button class="btn btn--ghost btn--sm">Logs</button>
+          <button class="btn btn--ghost btn--sm">Update</button>
+          <div class="spacer"></div>
+          <span class="preview-label">media share</span>
+        </div>
+      </div>
+
+      <div class="pod-card card">
+        <div class="pod-card__head">
+          <div class="pod-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v12H4z"/><path d="M2 20h20"/></svg>
+          </div>
+          <div>
+            <div class="pod-card__title">uptime-kuma</div>
+            <a class="pod-card__url">uptime-kuma.tailde95ff.ts.net ↗</a>
+          </div>
+          <div class="spacer"></div>
+          <span class="badge badge--starting">Starting</span>
+        </div>
+        <div class="pod-card__foot">
+          <button class="btn btn--secondary btn--sm">Stop</button>
+          <button class="btn btn--ghost btn--sm">Logs</button>
+          <button class="btn btn--ghost btn--sm">Update</button>
+        </div>
+      </div>
+
+      <div class="pod-card card">
+        <div class="pod-card__head">
+          <div class="pod-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          </div>
+          <div>
+            <div class="pod-card__title">radarr</div>
+            <a class="pod-card__url">radarr.tailde95ff.ts.net ↗</a>
+          </div>
+          <div class="spacer"></div>
+          <span class="badge badge--stopped">Stopped</span>
+        </div>
+        <div class="pod-card__foot">
+          <button class="btn btn--primary btn--sm">Start</button>
+          <button class="btn btn--ghost btn--sm">Logs</button>
+          <button class="btn btn--danger btn--sm">Remove</button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Component swatches -->
+    <div class="section-title">Buttons</div>
+    <div class="preview-row">
+      <button class="btn btn--primary">Install</button>
+      <button class="btn btn--secondary">Stop</button>
+      <button class="btn btn--ghost">Logs</button>
+      <button class="btn btn--danger">Remove</button>
+      <button class="btn btn--primary btn--loading"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.2-8.6"/></svg>Starting…</button>
+    </div>
+
+    <div class="section-title">Status</div>
+    <div class="preview-row">
+      <span class="badge badge--running">Running</span>
+      <span class="badge badge--starting">Starting</span>
+      <span class="badge badge--stopped">Stopped</span>
+      <span class="badge badge--error">Error</span>
+    </div>
+
+    <!-- Log panel -->
+    <div class="section-title">Log / output</div>
+    <div class="log" style="width:100%;max-width:640px">
+      <div class="log__bar"><span class="log__dot"></span><span class="log__name">sonarr · last 100 lines</span><div class="spacer"></div><button class="btn btn--ghost btn--sm">Copy</button></div>
+      <div class="log__body"><span class="t">[2026-07-02 14:41:02]</span> <span class="ok">✔</span> tailscale: enrolled as sonarr.tailde95ff.ts.net
+<span class="t">[2026-07-02 14:41:03]</span> serve: https://sonarr.tailde95ff.ts.net → 127.0.0.1:8989
+<span class="t">[2026-07-02 14:41:05]</span> <span class="warn">!</span> /data mounted read-write (media share)
+<span class="t">[2026-07-02 14:41:06]</span> Sonarr ready. Listening on :8989</div>
+    </div>
+
+    <!-- Form field -->
+    <div class="section-title">Form</div>
+    <div class="form-section" style="width:100%;max-width:520px">
+      <h3>Tailscale</h3>
+      <label class="toggle" style="margin-bottom:var(--sp-4)">
+        <input type="checkbox" checked><span class="toggle__track"></span>
+        <span>Own tailnet identity + HTTPS via <code>tailscale serve</code></span>
+      </label>
+      <div class="field">
+        <label class="field__label">Auth key</label>
+        <input class="input" placeholder="paste a fresh single-use, non-ephemeral key">
+        <span class="field__hint">Needs HTTPS Certificates enabled once in the Tailscale admin console.</span>
+      </div>
+    </div>
+
+    <!-- Alert -->
+    <div class="section-title">Alerts</div>
+    <div style="width:100%;max-width:520px;display:flex;flex-direction:column;gap:var(--sp-3)">
+      <div class="alert alert--ok"><svg class="alert__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg><div><strong>Installed.</strong> radarr generated — start it to pull the image and enroll on the tailnet.</div></div>
+      <div class="alert alert--info"><svg class="alert__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg><div>Starting can take a few minutes on first run.</div></div>
+    </div>
+
+  </main>
+</div>
+</body>
+</html>

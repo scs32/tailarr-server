@@ -31,12 +31,7 @@ main() {
     local selected_service
     selected_service=$(select_container "$JSON_FILE") || { echo "No container selected. Exiting."; exit 0; }
 
-    # Step 2: NPM Configuration
-    echo "=== NPM Configuration ==="
-    local npm_choice
-    npm_choice=$(ask_yes_no "Would you like to package this with NPM (Nginx Proxy Manager)?" "yes") || { echo "Exiting..."; exit 0; }
-
-    # Step 3: Tailscale Configuration
+    # Step 2: Tailscale Configuration
     echo "=== Tailscale Configuration ==="
     local tailscale_choice
     tailscale_choice=$(ask_yes_no "Would you like to enable Tailscale?" "yes") || { echo "Exiting..."; exit 0; }
@@ -81,7 +76,7 @@ main() {
     # Step 8: Build Configuration
     echo "=== Building Configuration ==="
     local config_file
-    config_file=$(build_configuration "$JSON_FILE" "$selected_service" "$npm_choice" "$tailscale_choice" "$auth_key_file" "$base_path" "$https_choice")
+    config_file=$(build_configuration "$JSON_FILE" "$selected_service" "$tailscale_choice" "$auth_key_file" "$base_path" "$https_choice")
 
     # Display summary
     display_config_summary "$config_file"

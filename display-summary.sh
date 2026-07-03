@@ -25,15 +25,13 @@ display_service_overview() {
     local service=$(jq -r '.service' <<<"$service_info")
     local image=$(jq -r '.image' <<<"$service_info")
     local include_ts=$(jq -r '.include_tailscale' <<<"$service_info")
-    local include_npm=$(jq -r '.include_npm' <<<"$service_info")
-    
+
     echo ""
     echo "Service Overview:"
     echo "----------------"
     echo "  Name: $service"
     echo "  Image: $image"
     echo "  Tailscale: $include_ts"
-    echo "  NPM: $include_npm"
 }
 
 # Display generated files
@@ -89,19 +87,15 @@ display_access_info() {
     
     local service=$(jq -r '.service' <<<"$service_info")
     local include_ts=$(jq -r '.include_tailscale' <<<"$service_info")
-    local include_npm=$(jq -r '.include_npm' <<<"$service_info")
     local primary_port=$(jq -r '.primary_port' <<<"$service_info")
-    
+
     echo ""
     echo "Access Information:"
     echo "------------------"
-    
+
     if [[ "$include_ts" == "yes" ]]; then
         echo "  Once deployed, the service will be a device on your tailnet"
         echo "  (hostname: $service)."
-        if [[ "$include_npm" == "yes" ]]; then
-            echo "    NPM Admin: port 81 on the service's MagicDNS name"
-        fi
         if [[ -n "$primary_port" ]]; then
             echo "    $service: port $primary_port on the service's MagicDNS name"
         fi

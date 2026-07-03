@@ -11,7 +11,6 @@ parse_service_config() {
     local auth_key_file
     local base_path
     local include_ts
-    local include_npm
     local network_mode
 
     service=$(jq -r '.container' <<<"$config_json")
@@ -20,7 +19,6 @@ parse_service_config() {
     auth_key_file=$(jq -r '.auth_key_file // ""' <<<"$config_json")
     base_path=$(jq -r '.base_path' <<<"$config_json")
     include_ts=$(jq -r '.include_tailscale' <<<"$config_json")
-    include_npm=$(jq -r '.include_npm' <<<"$config_json")
     local include_https
     include_https=$(jq -r '.include_https // "no"' <<<"$config_json")
     local command_str memory_limit
@@ -42,12 +40,10 @@ parse_service_config() {
     # Process image names
     local service_image
     local ts_image
-    local npm_image
-    
+
     service_image=$(qualify_image "$image_raw")
     ts_image=$(qualify_image "tailscale/tailscale:stable")
-    npm_image=$(qualify_image "jc21/nginx-proxy-manager:latest")
-    
+
     # Parse environment variables
     local env_vars_json
     env_vars_json=$(jq -c '.environment // {}' <<<"$config_json")
@@ -79,13 +75,11 @@ parse_service_config() {
         --arg service "$service" \
         --arg image "$service_image" \
         --arg ts_image "$ts_image" \
-        --arg npm_image "$npm_image" \
         --arg restart_policy "$restart_policy" \
         --arg auth_key_file "$auth_key_file" \
         --arg base_path "$base_path" \
         --arg service_dir "$service_dir" \
         --arg include_ts "$include_ts" \
-        --arg include_npm "$include_npm" \
         --arg include_https "$include_https" \
         --arg command "$command_str" \
         --arg memory_limit "$memory_limit" \
@@ -99,13 +93,11 @@ parse_service_config() {
             service: $service,
             image: $image,
             ts_image: $ts_image,
-            npm_image: $npm_image,
             restart_policy: $restart_policy,
             auth_key_file: $auth_key_file,
             base_path: $base_path,
             service_dir: $service_dir,
             include_tailscale: $include_ts,
-            include_npm: $include_npm,
             include_https: $include_https,
             command: $command,
             memory_limit: $memory_limit,

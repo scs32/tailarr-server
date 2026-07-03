@@ -1,0 +1,42 @@
+<!-- @dsCard group="Forms" -->
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forms</title><link rel="stylesheet" href="../podscale.css"></head>
+<body><div class="preview">
+  <div style="width:100%;max-width:520px">
+
+    <div class="form-section">
+      <h3>Tailscale</h3>
+      <label class="toggle" style="margin-bottom:var(--sp-4)">
+        <input type="checkbox" checked><span class="toggle__track"></span>
+        <span>Own tailnet identity + HTTPS via <code>tailscale serve</code></span>
+      </label>
+      <div class="field">
+        <label class="field__label">Auth key</label>
+        <input class="input" placeholder="paste a fresh single-use, non-ephemeral key">
+        <span class="field__hint">Needs HTTPS Certificates enabled once in the Tailscale admin console.</span>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <h3>Custom pod</h3>
+      <div class="field">
+        <label class="field__label">Name</label>
+        <input class="input" value="jellyfin">
+        <span class="field__hint">a–z, 0–9, dashes</span>
+      </div>
+      <div class="field field--invalid">
+        <label class="field__label">Image</label>
+        <input class="input" value="ghcr.io/">
+        <span class="field__error">An image reference is required.</span>
+      </div>
+      <div class="field">
+        <label class="field__label">Volumes</label>
+        <textarea class="textarea" rows="2">/config=/root/Pods/jellyfin/config
+/data=/data:ro</textarea>
+        <span class="field__hint">one /container/path=/host/path per line · append :ro for read-only</span>
+      </div>
+    </div>
+
+  </div>
+</div></body></html>

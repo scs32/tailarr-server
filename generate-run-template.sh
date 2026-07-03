@@ -5,14 +5,12 @@ generate_run_template() {
     local service="$1"
     local auth_key_file="$2"
     local ts_image="$3"
-    local npm_image="$4"
-    local service_image="$5"
-    local restart_policy="$6"
-    local include_ts="$7"
-    local include_npm="$8"
-    local primary_port="$9"
-    local service_info="${10}"
-    local include_https="${11:-no}"
+    local service_image="$4"
+    local restart_policy="$5"
+    local include_ts="$6"
+    local primary_port="$7"
+    local service_info="$8"
+    local include_https="${9:-no}"
 
     local ports_json command_str memory_limit
     ports_json=$(jq -c '.ports // {}' <<<"$service_info")
@@ -35,7 +33,6 @@ WAIT="\${WAIT:-10}"
 # Automatically remove existing containers for this service only
 echo "Removing existing $service containers..."
 podman rm -f $service 2>/dev/null || true
-podman rm -f npm-$service 2>/dev/null || true
 podman rm -f tailscale-$service 2>/dev/null || true
 
 EOF
@@ -104,31 +101,6 @@ if ! podman ps --format '{{.Names}}' | grep -q "^tailscale-$service\$"; then
   podman logs --tail 20 tailscale-$service >&2 || true
   exit 1
 fi
-
-EOF
-    fi
-
-    # --- Nginx Proxy Manager ---
-    if [[ "$include_npm" == "yes" ]]; then
-        cat << EOF
-# Start NPM
-echo "Starting Nginx Proxy Manager..."
-podman run -d \\
-  --name npm-$service \\
-EOF
-        if [[ "$include_ts" == "yes" ]]; then
-            echo "  --network container:tailscale-$service \\"
-        else
-            echo "  -p 80:80 -p 81:81 -p 443:443 \\"
-        fi
-        cat << EOF
-  -e DB_SQLITE_FILE="/data/database.sqlite" \\
-  -v "\$(pwd)/npm/data:/data" \\
-  -v "\$(pwd)/npm/letsencrypt:/etc/letsencrypt" \\
-  $npm_image
-
-echo "Waiting for NPM..."
-sleep "\$WAIT"
 
 EOF
     fi
@@ -207,19 +179,18 @@ EOF
 
     # --- Results ---
     if [[ "$include_ts" == "yes" ]]; then
-        generate_tailscale_results "$service" "$include_npm" "$primary_port" "$ports_json" "$include_https"
+        generate_tailscale_results "$service" "$primary_port" "$ports_json" "$include_https"
     else
-        generate_local_results "$service" "$include_npm" "$primary_port" "$ports_json"
+        generate_local_results "$service" "$primary_port" "$ports_json"
     fi
 }
 
 # Result section for Tailscale-enabled deployments
 generate_tailscale_results() {
     local service="$1"
-    local include_npm="$2"
-    local primary_port="$3"
-    local ports_json="$4"
-    local include_https="${5:-no}"
+    local primary_port="$2"
+    local ports_json="$3"
+    local include_https="${4:-no}"
 
     cat << EOF
 # Get Tailscale network information
@@ -237,12 +208,6 @@ fi
 echo ""
 echo "Verifying services..."
 EOF
-
-    if [[ "$include_npm" == "yes" ]]; then
-        cat << EOF
-NPM_READY=\$(podman exec tailscale-$service wget -q --spider --timeout=5 http://localhost:81 2>/dev/null && echo "yes" || echo "no")
-EOF
-    fi
 
     if [[ -n "$primary_port" ]]; then
         cat << EOF
@@ -264,16 +229,6 @@ echo ""
 echo "Service Status:"
 EOF
 
-    if [[ "$include_npm" == "yes" ]]; then
-        cat << EOF
-if [ "\$NPM_READY" = "yes" ]; then
-  echo "  Nginx Proxy Manager: OK"
-else
-  echo "  Nginx Proxy Manager: not ready"
-fi
-EOF
-    fi
-
     if [[ -n "$primary_port" ]]; then
         cat << EOF
 if [ "\$SERVICE_READY" = "yes" ]; then
@@ -288,10 +243,6 @@ EOF
 echo ""
 echo "Access URLs:"
 EOF
-
-    if [[ "$include_npm" == "yes" ]]; then
-        echo "echo \"  NPM Admin: http://\$TS_FQDN:81\""
-    fi
 
     if [[ "$include_https" == "yes" ]]; then
         echo "echo \"  $service: https://\$TS_FQDN (HTTPS via tailscale serve)\""
@@ -319,9 +270,8 @@ EOF
 # Result section for deployments without Tailscale (locally published ports)
 generate_local_results() {
     local service="$1"
-    local include_npm="$2"
-    local primary_port="$3"
-    local ports_json="$4"
+    local primary_port="$2"
+    local ports_json="$3"
 
     cat << EOF
 echo ""
@@ -331,10 +281,6 @@ echo "========================================"
 echo ""
 echo "Access URLs (local network):"
 EOF
-
-    if [[ "$include_npm" == "yes" ]]; then
-        echo "echo \"  NPM Admin: http://localhost:81\""
-    fi
 
     local host_port
     while IFS= read -r host_port; do

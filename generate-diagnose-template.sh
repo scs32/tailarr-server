@@ -17,7 +17,7 @@ echo ""
 # 1. Container status
 echo "Container Status:"
 echo "----------------"
-CONTAINERS=\$(podman ps -a --format '{{.Names}} {{.Status}}' | grep -E "(\$SERVICE_NAME|tailscale-\$SERVICE_NAME|npm-\$SERVICE_NAME)")
+CONTAINERS=\$(podman ps -a --format '{{.Names}} {{.Status}}' | grep -E "(\$SERVICE_NAME|tailscale-\$SERVICE_NAME)")
 if [ -n "\$CONTAINERS" ]; then
   echo "\$CONTAINERS"
 else
@@ -76,11 +76,7 @@ fi
 if podman ps --format '{{.Names}}' | grep -q "^tailscale-\$SERVICE_NAME\$"; then
   echo "Connectivity Test:"
   echo "-----------------"
-  
-  # Test NPM
-  NPM_TEST=\$(podman exec tailscale-\$SERVICE_NAME sh -c "command -v wget >/dev/null 2>&1 || apk add --no-cache wget >/dev/null 2>&1; wget -q --spider --timeout=5 http://localhost:81" && echo "NPM: ✓ Accessible" || echo "NPM: × Not accessible")
-  echo "\$NPM_TEST"
-  
+
   # Test service if port is defined
   if [ -n "$primary_port" ]; then
     SVC_TEST=\$(podman exec tailscale-\$SERVICE_NAME wget -q --spider --timeout=5 http://localhost:$primary_port 2>/dev/null && echo "\$SERVICE_NAME: ✓ Accessible" || echo "\$SERVICE_NAME: × Not accessible")
@@ -101,10 +97,6 @@ echo "------------------"
 echo "Service directory: \$(pwd)"
 if [ -d "./tailscale" ]; then
   echo "Tailscale state: ./tailscale"
-fi
-if [ -d "./npm" ]; then
-  echo "NPM data: ./npm/data"
-  echo "NPM certs: ./npm/letsencrypt"
 fi
 echo ""
 

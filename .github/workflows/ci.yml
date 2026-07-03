@@ -17,3 +17,24 @@ jobs:
         run: bash tests/smoke.sh
       - name: Web shares test (registry + attach flow against create.sh)
         run: python3 tests/web-shares.py
+      - name: Web API test (JSON API end-to-end over HTTP)
+        run: python3 tests/web-api.py
+
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/ui/package-lock.json
+      - name: Install UI deps
+        run: npm ci
+        working-directory: web/ui
+      - name: Typecheck
+        run: npm run typecheck
+        working-directory: web/ui
+      - name: Build SPA
+        run: npm run build
+        working-directory: web/ui

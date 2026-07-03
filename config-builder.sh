@@ -9,11 +9,10 @@
 build_configuration() {
     local json_file="$1"
     local service_name="$2"
-    local npm_choice="$3"
-    local tailscale_choice="$4"
-    local auth_key_file="$5"
-    local base_path="$6"
-    local https_choice="${7:-no}"
+    local tailscale_choice="$3"
+    local auth_key_file="$4"
+    local base_path="$5"
+    local https_choice="${6:-no}"
 
     # Get service specification from homelab.js
     local spec
@@ -53,7 +52,6 @@ build_configuration() {
         --arg image "$image" \
         --arg network_mode "$network_mode" \
         --arg restart_policy "$restart_policy" \
-        --arg include_npm "$npm_choice" \
         --arg include_tailscale "$tailscale_choice" \
         --arg include_https "$https_choice" \
         --arg auth_key_file "$auth_key_file" \
@@ -67,7 +65,6 @@ build_configuration() {
             network_mode: $network_mode,
             ports: $ports,
             restart_policy: $restart_policy,
-            include_npm: $include_npm,
             include_tailscale: $include_tailscale,
             include_https: $include_https,
             auth_key_file: $auth_key_file,
@@ -106,7 +103,6 @@ display_config_summary() {
     echo "=== Configuration Summary ==="
     echo "Service: $(jq -r '.container' "$config_file")"
     echo "Image: $(jq -r '.image' "$config_file")"
-    echo "NPM: $(jq -r '.include_npm' "$config_file")"
     echo "Tailscale: $(jq -r '.include_tailscale' "$config_file")"
     echo "Auth key file: $(jq -r '.auth_key_file // "n/a"' "$config_file")"
     echo "Network: $(jq -r '.network_mode' "$config_file")"

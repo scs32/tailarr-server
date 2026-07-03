@@ -265,25 +265,6 @@
     "restart_policy": "unless-stopped"
   },
   {
-    "name": "nginx-proxy-manager",
-    "image": "jc21/nginx-proxy-manager:latest",
-    "default_port": 81,
-    "volumes": {
-      "/path/to/data": "/data",
-      "/path/to/letsencrypt": "/etc/letsencrypt"
-    },
-    "environment": {
-      "PUID": "1000",
-      "PGID": "1000",
-      "TZ": "America/Los_Angeles"
-    },
-    "network_mode": "bridge",
-    "ports": {
-      "81": "81"
-    },
-    "restart_policy": "unless-stopped"
-  },
-  {
     "name": "pi-hole",
     "image": "pihole/pihole:latest",
     "default_port": 80,

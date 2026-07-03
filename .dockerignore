@@ -1,0 +1,9 @@
+# Keep the build context small and never ship host-arch node_modules or
+# stale build output into the image (the UI stage installs + builds fresh).
+web/ui/node_modules
+web/ui/dist
+.git
+**/__pycache__
+design/index.html
+design/components
+design/README.md

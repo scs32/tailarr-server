@@ -45,10 +45,10 @@ state directory).
 ## The architecture
 
 ```
-┌────────────────────────── shared network namespace ─┐
-│  tailscale-sonarr        sonarr        (npm-sonarr) │
-│  (joins your tailnet) ← --network container: ← ...   │
-└──────────────────────────────────────────────────────┘
+┌────────────────────── shared network namespace ─┐
+│  tailscale-sonarr    ←--network container:--    sonarr │
+│  (joins your tailnet)                                   │
+└────────────────────────────────────────────────────────┘
 ```
 
 A Tailscale sidecar starts first and joins your tailnet with the
