@@ -91,12 +91,74 @@ Add an entry to `homelab.js`:
 Optional fields: `"command"` (appended after the image) and
 `"memory_limit"` (podman `-m`).
 
+## Running on macOS with apple/container
+
+Podscale needs a Linux host, but you don't need a separate machine — run
+it inside a lightweight Linux guest with Apple's
+[`container`](https://github.com/apple/container) tool (macOS 15+, Apple
+silicon). The guest is where podman and the pods live; macOS just hosts it.
+
+**1. Install and start apple/container:**
+
+```sh
+brew install container
+container system start
+```
+
+**2. Create a long-lived Debian guest.** Bind-mount a host folder for
+media *now* — apple/container fixes mounts at creation time, so adding one
+later means destroying and recreating the guest:
+
+```sh
+mkdir -p "$HOME/poddata"
+container run -d --name podhost \
+  --cpus 4 --memory 4g \
+  --volume "$HOME/poddata:/data" \
+  docker.io/library/debian:bookworm sleep infinity
+```
+
+**3. Install Podscale inside the guest.** Shell in, add `curl`, then run
+the normal one-liner with your
+[Tailscale auth key](https://login.tailscale.com/admin/settings/keys):
+
+```sh
+container exec -ti podhost bash
+# now inside the guest:
+apt update && apt install -y curl
+TS_AUTHKEY=tskey-... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/podscale/main/install.sh)"
+```
+
+The bootstrap detects the guest's reduced MTU and pins podman's network
+MTU to match (nested guests run at MTU 1280; larger MTUs silently
+blackhole TLS). When it finishes, open
+**`https://podscale.<your-tailnet>.ts.net`** from any tailnet device.
+
+**Media into pods.** Everything under the guest's `/data` maps back to
+`$HOME/poddata` on your Mac. Attach it to pods from the web UI's Shares
+page so only media crosses the pod boundary — configs and Tailscale
+identities stay per-pod inside the guest.
+
+**Surviving reboots.** apple/container has no `--restart` flag and the
+guest stops when your Mac shuts down. The bootstrap installs
+`/root/start-pods.sh`, which wipes podman's stale runroot once per boot
+(the guest keeps `/run` on disk, so podman can't detect reboots) and
+starts sidecars before services. Bring the fleet back after a reboot with:
+
+```sh
+container start podhost
+container exec podhost /root/start-pods.sh
+```
+
+To automate it, wire those two commands into a macOS **LaunchAgent** (or
+login item) so the guest and pods come up without you.
+
 ## Supported platforms
 
 Debian/Ubuntu hosts with podman (auto-installed). Runs happily inside
-VMs and container-VMs (tested in apple/container guests — see
+VMs and container-VMs — see **Running on macOS with apple/container**
+above for the fully worked nested-guest path, and
 `bootstrap-podscale.sh` for the MTU and boot-persistence handling that
-nested hosts need). Everything else: PRs welcome.
+nested hosts need. Everything else: PRs welcome.
 
 ## Development
 
