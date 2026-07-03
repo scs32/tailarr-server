@@ -13,11 +13,18 @@ export function CatalogCard({ item }: { item: CatalogItem }) {
           <div className="pod-card__title" style={{ fontSize: "var(--fs-base)" }}>
             {item.name}
           </div>
-          {item.installed ? (
-            <span className="chip chip--installed">Installed</span>
-          ) : (
-            item.port && <span className="chip">port {item.port}</span>
-          )}
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 2 }}>
+            {item.installed ? (
+              <span className="chip chip--installed">Installed</span>
+            ) : (
+              item.port && <span className="chip">port {item.port}</span>
+            )}
+            {item.source !== "built-in" && (
+              <span className="chip" title={`from source: ${item.source}`}>
+                {item.source}
+              </span>
+            )}
+          </div>
         </div>
         <div className="spacer" />
         <Link className="btn btn--primary btn--sm" to={`/install/${item.name}`}>

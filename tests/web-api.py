@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 import urllib.request
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 pods = os.path.join(tempfile.mkdtemp(), "Pods")
@@ -28,6 +28,31 @@ import app  # noqa: E402
 srv = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 BASE = f"http://127.0.0.1:{srv.server_address[1]}"
+
+# A tiny local server that serves an external catalog (homelab.js schema),
+# so the catalog-sources test exercises the real fetch/merge path offline.
+CATALOG_JSON = json.dumps([
+    {"name": "extpod", "image": "docker.io/alpine:latest",
+     "command": "sleep infinity", "ports": {}, "environment": {}, "volumes": {},
+     "network_mode": "bridge", "restart_policy": "unless-stopped"},
+]).encode()
+
+
+class CatalogHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(CATALOG_JSON)))
+        self.end_headers()
+        self.wfile.write(CATALOG_JSON)
+
+    def log_message(self, *a):  # keep test output quiet
+        pass
+
+
+catsrv = ThreadingHTTPServer(("127.0.0.1", 0), CatalogHandler)
+threading.Thread(target=catsrv.serve_forever, daemon=True).start()
+CAT_URL = f"http://127.0.0.1:{catsrv.server_address[1]}/catalog.json"
 
 
 def check(cond, label):
@@ -107,5 +132,31 @@ try:
 except urllib.error.HTTPError as e:
     check(e.code == 404, "unknown API path -> 404")
 
+# --- catalog sources: add a URL source, merge, install from it, delete ---
+code, data = post("/api/sources", {"do": "add", "name": "community", "url": CAT_URL})
+check(code == 200 and data["ok"] and "1 services" in (data.get("message") or ""),
+      "POST /api/sources add fetches + validates the catalog")
+code, data = get("/api/sources")
+check(any(s["name"] == "community" and s["service_count"] == 1 and not s["error"]
+          for s in data["sources"]),
+      "GET /api/sources lists it with a service count")
+code, data = get("/api/catalog")
+ext = [c for c in data["catalog"] if c["name"] == "extpod"]
+check(bool(ext) and ext[0]["source"] == "community",
+      "source service merged into the catalog, tagged with its source")
+code, data = post("/api/install", {"service": "extpod", "tailscale": False,
+                                    "https": False, "volumes": {}})
+check(code == 200 and data["ok"], "install a service that came from a source")
+check(app.pod_config("extpod")["image"] == "docker.io/alpine:latest",
+      "source service resolved from the merged catalog and installed")
+code, data = post("/api/sources", {"do": "add", "name": "bad", "url": "ftp://nope"})
+check(code == 400 and "http" in data["error"], "reject a non-http(s) source URL")
+code, data = post("/api/sources", {"do": "delete", "name": "community"})
+check(code == 200 and data["ok"], "delete source")
+code, data = get("/api/catalog")
+check(not any(c["name"] == "extpod" for c in data["catalog"]),
+      "source's services leave the catalog after the source is deleted")
+
+catsrv.shutdown()
 srv.shutdown()
 print("WEB API TEST PASSED")

@@ -10,6 +10,7 @@ import type {
   Pod,
   Share,
   ShareResult,
+  Source,
 } from "./types";
 
 async function getJSON<T>(path: string): Promise<T> {
@@ -57,4 +58,12 @@ export const api = {
 
   shareAttach: (pod: string, share: string) =>
     postJSON<ShareResult>("/api/shares", { do: "attach", pod, share }),
+
+  sources: () => getJSON<{ sources: Source[] }>("/api/sources").then((d) => d.sources),
+
+  sourceAdd: (name: string, url: string) =>
+    postJSON<ShareResult>("/api/sources", { do: "add", name, url }),
+
+  sourceDelete: (name: string) =>
+    postJSON<ShareResult>("/api/sources", { do: "delete", name }),
 };

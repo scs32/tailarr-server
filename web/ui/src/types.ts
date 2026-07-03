@@ -21,6 +21,14 @@ export interface CatalogItem {
   volumes: Record<string, string>;
   command: string;
   installed: boolean;
+  source: string; // "built-in" or a source name
+}
+
+export interface Source {
+  name: string;
+  url: string;
+  service_count: number;
+  error: string | null;
 }
 
 export interface Share {

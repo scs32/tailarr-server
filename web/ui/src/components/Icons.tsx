@@ -58,3 +58,10 @@ export const SpinnerIcon = (p: SVGProps<SVGSVGElement>) => (
     <path d="M21 12a9 9 0 1 1-6.2-8.6" />
   </svg>
 );
+
+export const SearchIcon = (p: SVGProps<SVGSVGElement>) => (
+  <svg {...base(p)}>
+    <circle cx="11" cy="11" r="7" />
+    <path d="M21 21l-4.3-4.3" />
+  </svg>
+);

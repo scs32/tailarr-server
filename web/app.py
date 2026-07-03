@@ -25,7 +25,10 @@ import mimetypes
 import os
 import re
 import subprocess
+import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
@@ -39,6 +42,13 @@ CONTROLLER_PODS = {"podscale", "homepod"}  # don't offer stop-self buttons ("hom
 # Each share: {"host_path": "/data", "container_path": "/data", "ro": false}
 SHARES_FILE = os.path.join(PODS_DIR, ".shares.json")
 
+# External catalog sources: a registry of URLs to extra catalogs
+# (homelab.js JSON schema) whose services are merged into the catalog.
+# Each source: {"url": "https://..."}. Trusted single-user, tailnet-only.
+SOURCES_FILE = os.path.join(PODS_DIR, ".sources.json")
+CATALOG_TTL = 60  # seconds to cache a fetched source catalog
+_catalog_cache = {}  # url -> (expires_at, services, error)
+
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 
 
@@ -48,6 +58,80 @@ NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 def load_services():
     with open(os.path.join(APP_DIR, "homelab.js")) as f:
         return {s["name"]: s for s in json.load(f)}
+
+
+def load_sources():
+    try:
+        with open(SOURCES_FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_sources(sources):
+    tmp = SOURCES_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(sources, f, indent=2)
+    os.replace(tmp, SOURCES_FILE)
+
+
+def _valid_service(s):
+    return (isinstance(s, dict) and isinstance(s.get("name"), str) and s["name"]
+            and isinstance(s.get("image"), str) and s["image"])
+
+
+def fetch_catalog(url, force=False):
+    """Fetch + parse a remote catalog (homelab.js JSON schema).
+
+    Cached per URL with a short TTL so /api/catalog and installs stay fast and
+    a down source doesn't re-block every call. Returns (services, error).
+    """
+    now = time.time()
+    if not force:
+        cached = _catalog_cache.get(url)
+        if cached and cached[0] > now:
+            return cached[1], cached[2]
+    services, error = [], None
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "podscale"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            raw = r.read(2_000_000)  # cap at ~2 MB
+        data = json.loads(raw.decode())
+        if not isinstance(data, list):
+            error = "catalog must be a JSON array of services"
+        else:
+            services = [s for s in data if _valid_service(s)]
+            if not services:
+                error = "no valid services (each needs a name and image)"
+    except (urllib.error.URLError, ValueError, OSError) as e:
+        error = f"fetch failed: {e}"
+    _catalog_cache[url] = (now + CATALOG_TTL, services, error)
+    return services, error
+
+
+def all_services():
+    """Merged catalog: built-in homelab.js + enabled sources.
+
+    Built-in and earlier sources win on name collision. Each spec is tagged
+    with `_source` ("built-in" or the source name). Returns (dict, errors).
+    """
+    merged = {name: {**spec, "_source": "built-in"}
+              for name, spec in load_services().items()}
+    errors = {}
+    for sname, s in sorted(load_sources().items()):
+        services, err = fetch_catalog(s["url"])
+        if err:
+            errors[sname] = err
+        for svc in services:
+            if svc["name"] not in merged:
+                merged[svc["name"]] = {**svc, "_source": sname}
+    return merged, errors
+
+
+def resolve_service(name):
+    """Look up a catalog service by name across built-in + sources."""
+    return all_services()[0].get(name)
 
 
 def load_shares():
@@ -157,19 +241,34 @@ def status_pods():
 
 
 def status_catalog():
-    """The installable service catalog, flagged with what's deployed."""
+    """The installable service catalog (built-in + sources), flagged with
+    what's deployed and where each entry came from."""
     deployed = set(deployed_services())
+    merged, _ = all_services()
     out = []
-    for name, spec in sorted(load_services().items()):
+    for name, spec in sorted(merged.items()):
         out.append({
             "name": name,
-            "image": spec["image"],
+            "image": spec.get("image", ""),
             "ports": spec.get("ports", {}),
             "port": next(iter(spec.get("ports", {})), ""),
             "environment": spec.get("environment", {}),
             "volumes": spec.get("volumes", {}),
             "command": spec.get("command", ""),
             "installed": name in deployed,
+            "source": spec.get("_source", "built-in"),
+        })
+    return out
+
+
+def status_sources():
+    """Registered catalog sources, each with its service count / fetch error."""
+    out = []
+    for name, s in sorted(load_sources().items()):
+        services, err = fetch_catalog(s["url"])
+        out.append({
+            "name": name, "url": s["url"],
+            "service_count": len(services), "error": err,
         })
     return out
 
@@ -342,6 +441,37 @@ def op_share_delete(name):
                        " until re-rendered."}
 
 
+def op_source_add(name, url):
+    """Register an external catalog source. Fetches it first to validate."""
+    sources = load_sources()
+    name = (name or "").strip()
+    url = (url or "").strip()
+    if not NAME_RE.fullmatch(name):
+        return {"ok": False, "name": name, "error": "Invalid name (a-z, 0-9, dashes)."}
+    if name in sources:
+        return {"ok": False, "name": name, "error": f"Source '{name}' already exists."}
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return {"ok": False, "name": name, "error": "URL must start with http:// or https://."}
+    services, err = fetch_catalog(url, force=True)
+    if err:
+        return {"ok": False, "name": name, "error": f"Could not load catalog: {err}"}
+    sources[name] = {"url": url}
+    save_sources(sources)
+    return {"ok": True, "name": name, "error": None,
+            "message": f"Added source '{name}' ({len(services)} services)."}
+
+
+def op_source_delete(name):
+    sources = load_sources()
+    s = sources.pop(name, None)
+    if s is None:
+        return {"ok": False, "name": name, "error": "Unknown source."}
+    save_sources(sources)
+    _catalog_cache.pop(s["url"], None)
+    return {"ok": True, "name": name, "error": None,
+            "message": f"Deleted source '{name}'."}
+
+
 def op_attach(pod, sname):
     """Attach a share to an already-deployed pod. Returns a result dict."""
     shares = load_shares()
@@ -385,6 +515,8 @@ def api_get(path):
         return 200, {"catalog": status_catalog()}
     if path == "/api/shares":
         return 200, {"shares": status_shares()}
+    if path == "/api/sources":
+        return 200, {"sources": status_sources()}
     m = re.fullmatch(r"/api/pods/([a-z0-9][a-z0-9-]*)/logs", path)
     if m:
         return 200, op_action(m.group(1), "logs")
@@ -406,7 +538,7 @@ def _install_req_from_json(data):
             "https": bool(data.get("https", True)),
             "authkey": data.get("authkey", ""),
         }, None
-    spec = load_services().get(name)
+    spec = resolve_service(name)
     if not spec:
         return None, "Unknown service."
     volumes = data.get("volumes")
@@ -453,6 +585,16 @@ def api_post(path, data):
             result = op_share_delete(data.get("name"))
         elif action == "attach":
             result = op_attach(data.get("pod"), data.get("share"))
+        else:
+            return 400, {"ok": False, "error": "Unknown action."}
+        return (200 if result["ok"] else 400), result
+
+    if path == "/api/sources":
+        action = (data.get("do") or "").strip()
+        if action == "add":
+            result = op_source_add(data.get("name"), data.get("url"))
+        elif action == "delete":
+            result = op_source_delete(data.get("name"))
         else:
             return 400, {"ok": False, "error": "Unknown action."}
         return (200 if result["ok"] else 400), result
