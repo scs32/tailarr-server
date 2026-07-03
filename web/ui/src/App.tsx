@@ -6,6 +6,7 @@ import { InstallForm } from "./pages/InstallForm";
 import { CustomPod } from "./pages/CustomPod";
 import { Shares } from "./pages/Shares";
 import { Network } from "./pages/Network";
+import { Monitor } from "./pages/Monitor";
 
 function Layout() {
   return (
@@ -19,6 +20,7 @@ function Layout() {
           <Route path="/custom" element={<CustomPod />} />
           <Route path="/shares" element={<Shares />} />
           <Route path="/network" element={<Network />} />
+          <Route path="/monitor" element={<Monitor />} />
           <Route path="*" element={<Dashboard />} />
         </Routes>
       </main>

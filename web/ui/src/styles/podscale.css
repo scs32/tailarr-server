@@ -207,6 +207,57 @@ a:hover { text-decoration: underline; }
 .state-dot--running { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
 .state-dot--stopped { background: var(--warn); }
 .state-dot--error   { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+
+/* =========================================================
+   Monitor tab: drag pods onto the Kuma card
+   ========================================================= */
+.monitor-layout {
+  display: grid; grid-template-columns: 1fr 300px; gap: var(--sp-6);
+  align-items: stretch; margin-top: 0; /* Kuma card bottom tracks the pod grid */
+}
+@media (max-width: 900px) { .monitor-layout { grid-template-columns: 1fr; } }
+.monitor-layout__side { display: flex; flex-direction: column; }
+.monitor-layout__side .kuma-card { flex: 1; justify-content: center; }
+
+.monitor-pod[draggable="true"] { cursor: grab; }
+.monitor-pod[draggable="true"]:active { cursor: grabbing; }
+.monitor-pod--linked {
+  border-color: rgba(34,211,238,.4);
+  background: linear-gradient(180deg, rgba(34,211,238,.07), rgba(34,211,238,.02)), var(--surface);
+}
+.monitor-pod--busy { opacity: .75; }
+
+.kuma-card {
+  padding: var(--sp-6) var(--sp-5); display: flex; flex-direction: column;
+  align-items: center; gap: var(--sp-2); min-height: 220px;
+  border-style: dashed; border-width: 1.5px; transition: border-color .15s, box-shadow .15s;
+}
+.kuma-card__glyph {
+  width: 52px; height: 52px; border-radius: 14px; display: grid; place-items: center;
+  background: var(--accent-tint); border: 1px solid rgba(34,211,238,.35); color: var(--accent);
+  margin-bottom: var(--sp-2);
+}
+.kuma-card__glyph svg { width: 28px; height: 28px; }
+.kuma-card--over {
+  border-color: var(--accent); border-style: solid;
+  box-shadow: 0 0 0 4px var(--accent-tint), 0 0 24px rgba(34,211,238,.25);
+}
+.kuma-card--pulse { animation: kuma-pulse .9s ease-out 2; }
+@keyframes kuma-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(34,211,238,.45); }
+  100% { box-shadow: 0 0 0 26px rgba(34,211,238,0); }
+}
+
+/* The connection beam drawn while a monitor is being created */
+.beam-overlay { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 70; }
+.beam-path {
+  stroke: var(--accent); stroke-width: 2.5; fill: none;
+  stroke-dasharray: 8 7; stroke-linecap: round;
+  filter: drop-shadow(0 0 6px rgba(34,211,238,.8));
+  animation: beam-dash .45s linear infinite;
+}
+@keyframes beam-dash { to { stroke-dashoffset: -15; } }
+.beam-dot { fill: #fff; filter: drop-shadow(0 0 8px var(--accent)); }
 .pod-card__head { display: flex; align-items: center; gap: var(--sp-3); }
 .pod-icon {
   width: 40px; height: 40px; border-radius: 9px; flex: none;

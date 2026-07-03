@@ -32,6 +32,28 @@ export interface UpdatesInfo {
   images: Record<string, { update: boolean; error: string | null }>;
 }
 
+// GET /api/monitor — Monitor tab state (Uptime Kuma integration).
+export interface MonitorPod {
+  name: string;
+  state: PodState;
+  https: boolean;
+  dns_name: string;
+  url: string; // what the monitor will probe
+  monitored: boolean;
+}
+
+export interface MonitorStatus {
+  available: boolean; // socket client present in the image
+  configured: boolean; // creds saved
+  connected: boolean; // creds worked on this load
+  error: string | null;
+  kuma_pod: string | null; // deployed uptime-kuma pod, if any
+  kuma_url: string; // saved or suggested connect URL
+  kuma_link: string; // user-facing Kuma UI URL (MagicDNS)
+  monitors: { id: number; name: string; url: string; active: boolean }[];
+  pods: MonitorPod[];
+}
+
 // Editable config for a deployed pod (GET /api/pods/<name>/config).
 export interface PodConfig {
   image: string;

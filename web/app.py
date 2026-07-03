@@ -521,10 +521,19 @@ def op_action(name, action):
     elif action == "remove":
         # Uninstall: stop + remove the containers, then delete the pod's
         # directory (config, data dirs, and Tailscale identity included).
+        info_rm = pod_config(name) or {}
         r = subprocess.run(["sh", "./remove.sh"], cwd=svc_dir, capture_output=True,
                            text=True, timeout=300)
         if r.returncode == 0:
             shutil.rmtree(svc_dir, ignore_errors=True)
+            # Removing Uptime Kuma orphans the Monitor tab's saved
+            # credentials (a reinstall starts with a fresh admin account) —
+            # drop them so the connect flow starts clean.
+            if "uptime-kuma" in info_rm.get("image", ""):
+                try:
+                    os.remove(os.path.join(PODS_DIR, ".kuma.json"))
+                except OSError:
+                    pass
     else:
         return {"ok": False, "name": name, "action": action, "status": "error",
                 "error": "Unknown action.", "output": ""}
@@ -661,38 +670,52 @@ def op_reconfigure(name, data):
             "error": None, "output": output}
 
 
+def network_entry(name, ps):
+    """One pod's networking facts: flags from .config.json plus the live
+    tailnet identity (IP + MagicDNS name) read from its running sidecar."""
+    info = pod_config(name) or {}
+    ts = info.get("include_tailscale") == "yes"
+    entry = {
+        "name": name,
+        "controller": name in CONTROLLER_PODS,
+        "state": pod_state(name, ps),
+        "tailscale": ts,
+        "https": info.get("include_https") == "yes",
+        "network_mode": info.get("network_mode", "bridge"),
+        "ports": info.get("ports", {}),
+        "ip": "",
+        "dns_name": "",
+    }
+    if ts and ps.get(f"tailscale-{name}", ("", 0))[0] == "running":
+        r = podman("exec", f"tailscale-{name}", "tailscale", "status",
+                   "--json", "--peers=false", timeout=15)
+        if r.returncode == 0:
+            try:
+                me = (json.loads(r.stdout) or {}).get("Self") or {}
+                ips = me.get("TailscaleIPs") or []
+                entry["ip"] = next((i for i in ips if "." in i), ips[0] if ips else "")
+                entry["dns_name"] = (me.get("DNSName") or "").rstrip(".")
+            except ValueError:
+                pass
+    return entry
+
+
+def service_url(entry):
+    """Best launch/probe URL for a pod: HTTPS on the MagicDNS name when
+    tailscale serve terminates TLS, else plain http on the first port."""
+    port = next(iter(entry["ports"].values()), "")
+    host = entry["dns_name"] or entry["ip"]
+    if not host:
+        return ""
+    if entry["https"] and entry["dns_name"]:
+        return f"https://{entry['dns_name']}"
+    return f"http://{host}:{port}" if port else f"http://{host}"
+
+
 def status_network():
-    """Per-pod networking: tailscale/HTTPS flags plus the live tailnet
-    identity (IP + MagicDNS name) read from each running sidecar."""
+    """Per-pod networking for every deployed pod."""
     ps = ps_all()
-    out = []
-    for name in deployed_services():
-        info = pod_config(name) or {}
-        ts = info.get("include_tailscale") == "yes"
-        entry = {
-            "name": name,
-            "controller": name in CONTROLLER_PODS,
-            "state": pod_state(name, ps),
-            "tailscale": ts,
-            "https": info.get("include_https") == "yes",
-            "network_mode": info.get("network_mode", "bridge"),
-            "ports": info.get("ports", {}),
-            "ip": "",
-            "dns_name": "",
-        }
-        if ts and ps.get(f"tailscale-{name}", ("", 0))[0] == "running":
-            r = podman("exec", f"tailscale-{name}", "tailscale", "status",
-                       "--json", "--peers=false", timeout=15)
-            if r.returncode == 0:
-                try:
-                    me = (json.loads(r.stdout) or {}).get("Self") or {}
-                    ips = me.get("TailscaleIPs") or []
-                    entry["ip"] = next((i for i in ips if "." in i), ips[0] if ips else "")
-                    entry["dns_name"] = (me.get("DNSName") or "").rstrip(".")
-                except ValueError:
-                    pass
-        out.append(entry)
-    return out
+    return [network_entry(name, ps) for name in deployed_services()]
 
 
 def op_network_set(name, data):
@@ -717,6 +740,125 @@ def op_network_set(name, data):
         d["https"] = bool(data["https"])
     d["pull"] = False
     return op_reconfigure(name, d)
+
+
+# =========================================================================
+# Uptime Kuma monitoring (Monitor tab)
+# =========================================================================
+def _kuma():
+    """The kuma_client module, or (None, reason) when its socket-client
+    dependency isn't installed (e.g. in CI)."""
+    try:
+        import kuma_client
+        if not kuma_client.available():
+            return None, "uptime-kuma-api is not installed in this image."
+        return kuma_client, None
+    except ImportError as e:
+        return None, f"monitoring client unavailable: {e}"
+
+
+def _discover_kuma(entries):
+    """The deployed Uptime Kuma pod (by image), with a connect URL the
+    controller can reach: plain http on its tailnet IP + service port
+    (socket.io needs no TLS here; the tailnet already encrypts)."""
+    for e in entries:
+        info = pod_config(e["name"]) or {}
+        if "uptime-kuma" in info.get("image", ""):
+            port = next(iter(e["ports"].values()), "3001")
+            url = f"http://{e['ip']}:{port}" if e["ip"] else ""
+            return e["name"], url, service_url(e)
+    return None, "", ""
+
+
+def status_monitor():
+    """Everything the Monitor tab needs: Kuma connection state, the
+    tailscale-enabled pods, and which of them already have monitors."""
+    kuma, err = _kuma()
+    ps = ps_all()
+    entries = [network_entry(n, ps) for n in deployed_services()]
+    kuma_pod, suggested_url, kuma_link = _discover_kuma(entries)
+    pods = [
+        {"name": e["name"], "state": e["state"], "https": e["https"],
+         "dns_name": e["dns_name"], "url": service_url(e), "monitored": False}
+        for e in entries
+        if e["tailscale"] and e["name"] != kuma_pod and not e["controller"]
+    ]
+    out = {
+        "available": kuma is not None,
+        "configured": False,
+        "connected": False,
+        "error": err,
+        "kuma_pod": kuma_pod,
+        "kuma_url": suggested_url,
+        "kuma_link": kuma_link,
+        "monitors": [],
+        "pods": pods,
+    }
+    if kuma is None:
+        return out
+    conf = kuma.load_conf()
+    out["configured"] = conf is not None
+    if not conf:
+        return out
+    out["kuma_url"] = conf["url"]
+    try:
+        monitors = kuma.get_monitors() or []
+        out["connected"] = True
+        out["monitors"] = monitors
+        by_name = {m["name"] for m in monitors}
+        for p in pods:
+            p["monitored"] = p["name"] in by_name
+    except Exception as e:
+        out["error"] = f"Kuma connection failed: {e}"
+    return out
+
+
+def op_monitor_setup(data):
+    """Connect (and on a fresh instance, initialize) Kuma; save creds."""
+    kuma, err = _kuma()
+    if kuma is None:
+        return {"ok": False, "error": err}
+    url = (data.get("url") or "").strip()
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    if not url:
+        ps = ps_all()
+        entries = [network_entry(n, ps) for n in deployed_services()]
+        _, url, _ = _discover_kuma(entries)
+    if not url:
+        return {"ok": False, "error": "No Kuma URL given and no uptime-kuma pod found."}
+    if not username or not password:
+        return {"ok": False, "error": "Username and password are required."}
+    try:
+        r = kuma.setup(url, username, password)
+        return {"ok": True, "error": None, "fresh": r.get("fresh", False), "url": url}
+    except Exception as e:
+        return {"ok": False, "error": f"Could not connect: {e}"}
+
+
+def op_monitor_pod(name, action):
+    """Add or remove the Kuma monitor for a pod."""
+    kuma, err = _kuma()
+    if kuma is None:
+        return {"ok": False, "name": name, "error": err}
+    if name not in deployed_services():
+        return {"ok": False, "name": name, "error": "Unknown service."}
+    try:
+        if action == "add":
+            entry = network_entry(name, ps_all())
+            url = service_url(entry)
+            if not url:
+                return {"ok": False, "name": name,
+                        "error": "Pod has no reachable URL yet (sidecar still enrolling?)."}
+            kuma.add_monitor(name, url)
+            return {"ok": True, "name": name, "error": None, "url": url}
+        if action == "remove":
+            found = kuma.remove_monitor(name)
+            return {"ok": found, "name": name,
+                    "error": None if found else "No monitor with this name."}
+        return {"ok": False, "name": name, "error": "Unknown action."}
+    except Exception as e:
+        return {"ok": False, "name": name, "error": f"Kuma call failed: {e}"}
 
 
 def op_share_add(name, host_path, container_path, ro):
@@ -834,6 +976,8 @@ def api_get(path):
                      "images": data.get("images", {})}
     if path == "/api/network":
         return 200, {"network": status_network()}
+    if path == "/api/monitor":
+        return 200, status_monitor()
     if path == "/api/shares":
         return 200, {"shares": status_shares()}
     if path == "/api/sources":
@@ -912,6 +1056,15 @@ def api_post(path, data):
     m = re.fullmatch(r"/api/network/([a-z0-9][a-z0-9-]*)", path)
     if m:
         result = op_network_set(m.group(1), data)
+        return (200 if result["ok"] else 400), result
+
+    if path == "/api/monitor/setup":
+        result = op_monitor_setup(data)
+        return (200 if result["ok"] else 400), result
+
+    m = re.fullmatch(r"/api/monitor/pods/([a-z0-9][a-z0-9-]*)", path)
+    if m:
+        result = op_monitor_pod(m.group(1), (data.get("do") or "").strip())
         return (200 if result["ok"] else 400), result
 
     if path == "/api/shares":

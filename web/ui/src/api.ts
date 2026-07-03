@@ -7,6 +7,7 @@ import type {
   Info,
   InstallRequest,
   InstallResult,
+  MonitorStatus,
   NetworkEntry,
   Pod,
   PodConfigResult,
@@ -61,6 +62,20 @@ export const api = {
 
   networkSet: (pod: string, body: { tailscale?: boolean; https?: boolean }) =>
     postJSON<ActionResult>(`/api/network/${pod}`, body),
+
+  monitor: () => getJSON<MonitorStatus>("/api/monitor"),
+
+  monitorSetup: (body: { url: string; username: string; password: string }) =>
+    postJSON<{ ok: boolean; error: string | null; fresh?: boolean }>(
+      "/api/monitor/setup",
+      body,
+    ),
+
+  monitorPod: (name: string, action: "add" | "remove") =>
+    postJSON<{ ok: boolean; name: string; error: string | null }>(
+      `/api/monitor/pods/${name}`,
+      { do: action },
+    ),
 
   install: (req: InstallRequest) =>
     postJSON<InstallResult>("/api/install", req),

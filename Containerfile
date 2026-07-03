@@ -20,12 +20,16 @@ FROM docker.io/library/alpine:3.20
 
 # skopeo: remote digest lookups for the daily image-update checks
 RUN apk add --no-cache bash jq python3 podman skopeo
+# uptime-kuma-api: socket.io client behind the Monitor tab (Kuma has no
+# REST API for monitor CRUD)
+RUN apk add --no-cache py3-pip \
+    && pip install --no-cache-dir --break-system-packages uptime-kuma-api
 
 WORKDIR /app
 COPY create.sh error-handler.sh logging-utils.sh parse-service-config.sh \
      setup-service-env.sh generate-scripts.sh generate-run-template.sh \
      generate-diagnose-template.sh display-summary.sh homelab.js /app/
-COPY web/app.py /app/web/app.py
+COPY web/app.py web/kuma_client.py /app/web/
 COPY --from=ui /ui/dist /app/static
 
 ENV APP_DIR=/app \

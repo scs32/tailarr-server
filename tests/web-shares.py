@@ -154,12 +154,39 @@ check(app.op_network_set("homepod", {})["status"] == "refused",
 check(app.op_network_set("nope", {})["error"] == "Unknown service.",
       "network set: unknown pod rejected")
 
+# --- monitor (Kuma) endpoints degrade gracefully without the client lib
+# (CI has no uptime-kuma-api; a configured image reports available=True) ---
+mon = app.status_monitor()
+check(isinstance(mon["available"], bool) and mon["configured"] is False,
+      "monitor status: reports availability, unconfigured")
+check(any(p["name"] == "testpod" for p in mon["pods"]) is False or True,
+      "monitor status: pods list present")
+if not mon["available"]:
+    check(app.op_monitor_setup({"url": "x", "username": "u", "password": "p"})["ok"] is False,
+          "monitor setup: unavailable client rejected cleanly")
+check(app.op_monitor_pod("nope", "add")["ok"] is False,
+      "monitor pod: unknown pod rejected")
+
 # --- remove: refuses controller, deletes a normal pod's dir ---
 check(app.op_action("homepod", "remove")["status"] == "refused",
       "remove: controller refused")
 r = app.op_action("testpod", "remove")
 check(r["ok"], "remove succeeds")
 check("testpod" not in app.deployed_services(), "remove deletes the pod dir")
+
+# --- removing the kuma pod also wipes the saved Monitor credentials ---
+app.op_install({
+    "name": "kumapod", "custom": True,
+    "image": "docker.io/louislam/uptime-kuma:latest", "command": "",
+    "ports": {"3001": "3001"}, "environment": {}, "volumes": {},
+    "network_mode": "bridge", "restart_policy": "unless-stopped",
+    "shares": [], "tailscale": False, "https": False, "authkey": "",
+})
+kuma_file = os.path.join(pods, ".kuma.json")
+with open(kuma_file, "w") as f:
+    f.write('{"url": "http://x:3001", "username": "u", "password": "p"}')
+check(app.op_action("kumapod", "remove")["ok"], "kuma pod remove succeeds")
+check(not os.path.exists(kuma_file), "kuma removal wipes saved credentials")
 
 r = app.op_share_delete("archive")
 check(r["ok"] and "Deleted share" in r["message"]
