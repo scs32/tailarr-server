@@ -117,6 +117,64 @@
     "restart_policy": "unless-stopped"
   },
   {
+    "name": "sabnzbd",
+    "image": "linuxserver/sabnzbd:latest",
+    "default_port": 8080,
+    "volumes": {
+      "/path/to/config": "/config",
+      "/path/to/downloads": "/downloads",
+      "/path/to/incomplete-downloads": "/incomplete-downloads"
+    },
+    "environment": {
+      "PUID": "1000",
+      "PGID": "1000",
+      "TZ": "America/Los_Angeles"
+    },
+    "network_mode": "bridge",
+    "ports": {
+      "8080": "8080"
+    },
+    "restart_policy": "unless-stopped"
+  },
+  {
+    "name": "nzbget",
+    "image": "linuxserver/nzbget:latest",
+    "default_port": 6789,
+    "volumes": {
+      "/path/to/config": "/config",
+      "/path/to/downloads": "/downloads"
+    },
+    "environment": {
+      "PUID": "1000",
+      "PGID": "1000",
+      "TZ": "America/Los_Angeles"
+    },
+    "network_mode": "bridge",
+    "ports": {
+      "6789": "6789"
+    },
+    "restart_policy": "unless-stopped"
+  },
+  {
+    "name": "nzbhydra2",
+    "image": "linuxserver/nzbhydra2:latest",
+    "default_port": 5076,
+    "volumes": {
+      "/path/to/config": "/config",
+      "/path/to/downloads": "/downloads"
+    },
+    "environment": {
+      "PUID": "1000",
+      "PGID": "1000",
+      "TZ": "America/Los_Angeles"
+    },
+    "network_mode": "bridge",
+    "ports": {
+      "5076": "5076"
+    },
+    "restart_policy": "unless-stopped"
+  },
+  {
     "name": "jellyfin",
     "image": "linuxserver/jellyfin:latest",
     "default_port": 8096,
