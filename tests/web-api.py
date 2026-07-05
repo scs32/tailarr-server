@@ -92,7 +92,7 @@ code, data = post("/api/install", {
     "custom": True, "service": "apitest", "image": "docker.io/alpine:latest",
     "command": "sleep infinity",
     "volumes": {"/config": f"{pods}/apitest/config"},
-    "authkey": "tskey-test-api-key",
+    "authkey": "dummy-test-authkey-api",
 })
 check(code == 200 and data["ok"] and data["name"] == "apitest",
       "POST /api/install (custom) succeeds")
@@ -152,7 +152,7 @@ ext = [c for c in data["catalog"] if c["name"] == "extpod"]
 check(bool(ext) and ext[0]["source"] == "community",
       "source service merged into the catalog, tagged with its source")
 code, data = post("/api/install", {"service": "extpod", "volumes": {},
-                                    "authkey": "tskey-test-api-key"})
+                                    "authkey": "dummy-test-authkey-api"})
 check(code == 200 and data["ok"], "install a service that came from a source")
 check(app.pod_config("extpod")["image"] == "docker.io/alpine:latest",
       "source service resolved from the merged catalog and installed")

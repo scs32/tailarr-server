@@ -60,7 +60,7 @@ r = app.op_install({
     "volumes": {"/config": f"{pods}/testpod/config"},
     "network_mode": "bridge", "restart_policy": "unless-stopped",
     "shares": ["media"], "tailscale": False, "https": False,
-    "authkey": "tskey-test-web-key",
+    "authkey": "dummy-test-authkey-web",
 })
 check(r["ok"], "custom pod install with share succeeds")
 info = app.pod_config("testpod")
@@ -145,7 +145,7 @@ app.op_install({
     "name": "homepod", "custom": True, "image": "docker.io/alpine:latest",
     "command": "sleep infinity", "ports": {}, "environment": {}, "volumes": {},
     "network_mode": "bridge", "restart_policy": "unless-stopped",
-    "shares": [], "tailscale": False, "https": False, "authkey": "tskey-test-web-key",
+    "shares": [], "tailscale": False, "https": False, "authkey": "dummy-test-authkey-web",
 })
 check(app.op_reconfigure("homepod", {})["status"] == "refused",
       "reconfigure: controller refuses to recreate itself")
@@ -288,7 +288,7 @@ app.op_install({
     "name": "noport", "custom": True, "image": "docker.io/alpine:latest",
     "command": "sleep infinity", "ports": {}, "environment": {}, "volumes": {},
     "network_mode": "bridge", "restart_policy": "unless-stopped",
-    "shares": [], "tailscale": False, "https": False, "authkey": "tskey-test-web-key",
+    "shares": [], "tailscale": False, "https": False, "authkey": "dummy-test-authkey-web",
 })
 check("no HTTPS serve" in app.op_network_set("noport", {"funnel": True})["error"],
       "funnel: refused for a pod without a port")
@@ -342,7 +342,7 @@ app.op_install({
     "image": "docker.io/louislam/uptime-kuma:latest", "command": "",
     "ports": {"3001": "3001"}, "environment": {}, "volumes": {},
     "network_mode": "bridge", "restart_policy": "unless-stopped",
-    "shares": [], "tailscale": False, "https": False, "authkey": "tskey-test-web-key",
+    "shares": [], "tailscale": False, "https": False, "authkey": "dummy-test-authkey-web",
 })
 kuma_file = os.path.join(pods, ".kuma.json")
 with open(kuma_file, "w") as f:

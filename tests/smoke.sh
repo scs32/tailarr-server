@@ -13,8 +13,8 @@
 set -eu
 
 REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
-TEST_KEY="tskey-test-12345"
-TEST_KEY2="tskey-test-67890"
+TEST_KEY="dummy-test-authkey-1"
+TEST_KEY2="dummy-test-authkey-2"
 
 fail() {
     echo "FAIL: $1" >&2
