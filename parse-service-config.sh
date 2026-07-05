@@ -72,6 +72,12 @@ parse_service_config() {
     include_https="no"
     [[ -n "$primary_port" ]] && include_https="yes"
 
+    # Public exposure via Tailscale Funnel is opt-in per pod and only
+    # meaningful when HTTPS serve exists to be funneled.
+    local funnel
+    funnel=$(jq -r '.funnel // "no"' <<<"$config_json")
+    [[ "$include_https" == "yes" && "$funnel" == "yes" ]] || funnel="no"
+
     # Build service directory path
     local service_dir
     service_dir="${base_path}/${service}"
@@ -88,6 +94,7 @@ parse_service_config() {
         --arg service_dir "$service_dir" \
         --arg include_ts "$include_ts" \
         --arg include_https "$include_https" \
+        --arg funnel "$funnel" \
         --arg command "$command_str" \
         --arg memory_limit "$memory_limit" \
         --arg network_mode "$network_mode" \
@@ -106,6 +113,7 @@ parse_service_config() {
             service_dir: $service_dir,
             include_tailscale: $include_ts,
             include_https: $include_https,
+            funnel: $funnel,
             command: $command,
             memory_limit: $memory_limit,
             network_mode: $network_mode,

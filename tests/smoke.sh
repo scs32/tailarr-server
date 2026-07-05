@@ -261,5 +261,30 @@ rm -f "$SVC_DIR/.tailscale_authkey"
 run_generated "$SVC_DIR"
 pass "run.sh still works after the single-use key file is deleted (state present)"
 
+# =========================================================================
+echo "=== Pass 4: funnel render (engine direct, no wizard) ==="
+# Funnel is off by default: nothing generated so far may allow it.
+grep -rq "AllowFunnel" "$HOME/Pods" && fail "AllowFunnel present without funnel=yes"
+pass "no AllowFunnel in any default render"
+
+# Render one pod with funnel=yes straight through create.sh.
+printf '%s' "{
+  \"container\": \"funtest\", \"image\": \"docker.io/nginx:latest\",
+  \"network_mode\": \"bridge\", \"ports\": {\"80\": \"80\"},
+  \"restart_policy\": \"unless-stopped\",
+  \"include_tailscale\": \"yes\", \"include_https\": \"yes\",
+  \"auth_key_file\": \"$HOME/Pods/.tailscale_authkey\",
+  \"base_path\": \"$HOME/Pods\", \"environment\": {}, \"volumes\": {},
+  \"command\": \"\", \"funnel\": \"yes\"
+}" | "$BASH_BIN" "$REPO_DIR/create.sh" > "$WORK/funtest-create.log" 2>&1 \
+    || { cat "$WORK/funtest-create.log" >&2; fail "create.sh failed for funnel=yes"; }
+
+SVC_DIR="$HOME/Pods/funtest"
+grep -q '"AllowFunnel": {"${TS_CERT_DOMAIN}:443": true}' "$SVC_DIR/run.sh" \
+    || fail "funnel=yes run.sh does not write AllowFunnel into the serve config"
+grep -q '"funnel": "yes"' "$SVC_DIR/.config.json" \
+    || fail "funnel choice not persisted in .config.json"
+pass "funnel=yes renders AllowFunnel and persists the choice"
+
 echo ""
 echo "SMOKE TEST PASSED"

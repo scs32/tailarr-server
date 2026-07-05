@@ -10,13 +10,15 @@ generate_run_template() {
     local primary_port="$6"
     local service_info="$7"
 
-    local ports_json command_str memory_limit include_https
+    local ports_json command_str memory_limit include_https funnel
     ports_json=$(jq -c '.ports // {}' <<<"$service_info")
     command_str=$(jq -r '.command // ""' <<<"$service_info")
     memory_limit=$(jq -r '.memory_limit // ""' <<<"$service_info")
     # Every pod is a Tailscale node; HTTPS via serve is on whenever there is a
     # port to proxy (parse-service-config derives this from the primary port).
     include_https=$(jq -r '.include_https // "no"' <<<"$service_info")
+    # Public exposure (Tailscale Funnel), opt-in per pod.
+    funnel=$(jq -r '.funnel // "no"' <<<"$service_info")
 
     # --- Header and container cleanup ---
     cat << EOF
@@ -55,6 +57,13 @@ EOF
 cat > "\$(pwd)/tailscale-serve.json" << 'SERVEEOF'
 {
   "TCP": {"443": {"HTTPS": true}},
+EOF
+            if [[ "$funnel" == "yes" ]]; then
+                cat << 'EOF'
+  "AllowFunnel": {"${TS_CERT_DOMAIN}:443": true},
+EOF
+            fi
+            cat << EOF
   "Web": {
     "\${TS_CERT_DOMAIN}:443": {
       "Handlers": {"/": {"Proxy": "http://127.0.0.1:$primary_port"}}

@@ -12,7 +12,8 @@ export type PodAction =
   | "remove"
   | "reconfigure"
   | "backup"
-  | "restore";
+  | "restore"
+  | "funnel";
 
 export type FleetAction = "stop" | "start" | "restart";
 
@@ -35,6 +36,7 @@ export interface NetworkEntry {
   state: PodState;
   tailscale: boolean;
   https: boolean;
+  funnel: boolean; // publicly reachable via Tailscale Funnel
   network_mode: string;
   ports: Record<string, string>;
   ip: string; // tailnet IPv4, "" when sidecar not running

@@ -7,6 +7,7 @@ installing only generates scripts. The share host paths point at /data
 and /archive, which are deliberately NOT creatable in test environments -
 that also exercises the warn-and-continue path for unmounted share roots.
 """
+import json
 import os
 import sys
 import tempfile
@@ -239,16 +240,59 @@ r = app.op_backup_delete("testpod", b[0]["ts"])
 check(r["ok"] and not os.path.exists(tar_path), "backup delete removes tar + index")
 check(app.status_backups("testpod") == [], "backup delete: index empty")
 
-# --- network status + set ---
+# --- network status + funnel toggle ---
 net = {e["name"]: e for e in app.status_network()}
 check(net["testpod"]["tailscale"] is True and net["testpod"]["ip"] == "",
       "network: pod is a tailnet node (identity pending without a live sidecar)")
-r = app.op_network_set("testpod", {})
-check(r["ok"], "network set: re-render succeeds")
-check(app.op_network_set("homepod", {})["status"] == "refused",
-      "network set: controller refused")
-check(app.op_network_set("nope", {})["error"] == "Unknown service.",
-      "network set: unknown pod rejected")
+check(net["testpod"]["funnel"] is False, "network: funnel off by default")
+check("Missing 'funnel'" in app.op_network_set("testpod", {})["error"],
+      "funnel: missing flag rejected")
+check(app.op_network_set("homepod", {"funnel": True})["status"] == "refused",
+      "funnel: controller refused")
+check(app.op_network_set("nope", {"funnel": True})["error"] == "Unknown service.",
+      "funnel: unknown pod rejected")
+
+r = app.op_network_set("testpod", {"funnel": True})
+check(r["ok"] and r["status"] == "public", "funnel: make public succeeds")
+check(app.pod_config("testpod")["funnel"] == "yes", "funnel: persisted in .config.json")
+run_sh = open(os.path.join(pods, "testpod", "run.sh")).read()
+check('"AllowFunnel": {"${TS_CERT_DOMAIN}:443": true}' in run_sh,
+      "funnel: re-rendered run.sh writes AllowFunnel")
+serve = json.load(open(os.path.join(pods, "testpod", "tailscale-serve.json")))
+check(serve.get("AllowFunnel") == {"${TS_CERT_DOMAIN}:443": True},
+      "funnel: mounted serve config rewritten in place with AllowFunnel")
+check({e["name"]: e for e in app.status_network()}["testpod"]["funnel"] is True,
+      "network: funnel readback true after the flip")
+
+r = app.op_network_set("testpod", {"funnel": False})
+check(r["ok"] and r["status"] == "private", "funnel: make private succeeds")
+check(app.pod_config("testpod")["funnel"] == "no", "funnel: off persisted")
+serve = json.load(open(os.path.join(pods, "testpod", "tailscale-serve.json")))
+check("AllowFunnel" not in serve, "funnel: AllowFunnel removed from serve config")
+run_sh = open(os.path.join(pods, "testpod", "run.sh")).read()
+check("AllowFunnel" not in run_sh, "funnel: AllowFunnel gone from run.sh")
+
+# reconfigure must not clobber the funnel choice
+app.op_network_set("testpod", {"funnel": True})
+app.op_reconfigure("testpod", {
+    "image": "docker.io/alpine:3.20", "command": "sleep infinity",
+    "ports": {"8080": "8080"}, "environment": {}, "volumes": {},
+    "memory_limit": "", "shares": [], "pull": False,
+})
+check(app.pod_config("testpod")["funnel"] == "yes",
+      "funnel: survives a reconfigure")
+app.op_network_set("testpod", {"funnel": False})
+
+# a pod without a port has no HTTPS serve to expose
+app.op_install({
+    "name": "noport", "custom": True, "image": "docker.io/alpine:latest",
+    "command": "sleep infinity", "ports": {}, "environment": {}, "volumes": {},
+    "network_mode": "bridge", "restart_policy": "unless-stopped",
+    "shares": [], "tailscale": False, "https": False, "authkey": "tskey-test-web-key",
+})
+check("no HTTPS serve" in app.op_network_set("noport", {"funnel": True})["error"],
+      "funnel: refused for a pod without a port")
+app.op_action("noport", "remove")
 
 # --- monitor (Kuma) endpoints degrade gracefully without the client lib
 # (CI has no uptime-kuma-api; a configured image reports available=True) ---

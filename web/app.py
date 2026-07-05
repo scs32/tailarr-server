@@ -277,6 +277,7 @@ def config_from_info(info):
         "restart_policy": info.get("restart_policy", "unless-stopped"),
         "include_tailscale": info.get("include_tailscale", "no"),
         "include_https": info.get("include_https", "no"),
+        "funnel": info.get("funnel", "no"),
         "auth_key_file": info.get("auth_key_file", ""),
         "base_path": info.get("base_path", PODS_DIR),
         "environment": info.get("environment", {}),
@@ -999,6 +1000,9 @@ def _run_reconfigure(name, data, info, image):
         "restart_policy": info.get("restart_policy", "unless-stopped"),
         "include_tailscale": "yes",
         "include_https": "yes" if (data.get("ports") or {}) else "no",
+        # Public exposure survives reconfigures; only the Funnel toggle
+        # (op_network_set) changes it.
+        "funnel": info.get("funnel", "no"),
         # Existing pods keep their Tailscale identity in ./tailscale/, so no
         # auth key is needed to re-enroll; carry the saved path through.
         "auth_key_file": info.get("auth_key_file",
@@ -1045,6 +1049,7 @@ def network_entry(name, ps):
         "state": pod_state(name, ps),
         "tailscale": ts,
         "https": info.get("include_https") == "yes",
+        "funnel": info.get("funnel") == "yes",
         "network_mode": info.get("network_mode", "bridge"),
         "ports": info.get("ports", {}),
         "ip": "",
@@ -1083,28 +1088,86 @@ def status_network():
     return [network_entry(name, ps) for name in deployed_services()]
 
 
+def _serve_config(primary_port, funnel):
+    """The tailscale-serve.json content for a pod: TLS on 443 proxying to the
+    service, with public (Funnel) exposure opt-in. ${TS_CERT_DOMAIN} is a
+    literal placeholder — the sidecar's containerboot interpolates it."""
+    cfg = {"TCP": {"443": {"HTTPS": True}}}
+    if funnel:
+        cfg["AllowFunnel"] = {"${TS_CERT_DOMAIN}:443": True}
+    cfg["Web"] = {"${TS_CERT_DOMAIN}:443": {
+        "Handlers": {"/": {"Proxy": f"http://127.0.0.1:{primary_port}"}}}}
+    return cfg
+
+
 def op_network_set(name, data):
-    """Flip a pod's tailscale / HTTPS setting: re-render + restart with the
-    rest of its saved config unchanged. data: {tailscale?: bool, https?: bool}."""
+    """Make a pod public (Tailscale Funnel) or private again. data: {funnel: bool}.
+
+    Live flip, no pod restart: the pod's tailscale-serve.json is rewritten
+    IN PLACE — it's a single-file bind mount into the sidecar (same inode or
+    the mount goes stale), whose containerboot watches TS_SERVE_CONFIG and
+    re-applies serve config on change. The choice is also persisted through
+    create.sh (.config.json + run.sh) so recreates and reboots keep it.
+
+    Public exposure additionally requires the `funnel` nodeAttr in the
+    tailnet policy — without it tailscaled refuses, which shows up in the
+    sidecar's logs and in the serve-status readback appended to the output.
+    """
     if name not in deployed_services():
-        return {"ok": False, "name": name, "action": "network", "status": "error",
+        return {"ok": False, "name": name, "action": "funnel", "status": "error",
                 "error": "Unknown service.", "output": ""}
     if name in CONTROLLER_PODS:
-        return {"ok": False, "name": name, "action": "network", "status": "refused",
-                "error": "Not changing the controller's network from itself.",
+        return {"ok": False, "name": name, "action": "funnel", "status": "refused",
+                "error": "Not exposing the controller to the public internet.",
                 "output": ""}
     info = pod_config(name)
     if info is None:
-        return {"ok": False, "name": name, "action": "network", "status": "error",
+        return {"ok": False, "name": name, "action": "funnel", "status": "error",
                 "error": "No .config.json for this pod (redeploy once to create it).",
                 "output": ""}
-    d = reconfig_data_from_info(info)
-    if "tailscale" in data:
-        d["tailscale"] = bool(data["tailscale"])
-    if "https" in data:
-        d["https"] = bool(data["https"])
-    d["pull"] = False
-    return op_reconfigure(name, d)
+    if "funnel" not in data:
+        return {"ok": False, "name": name, "action": "funnel", "status": "error",
+                "error": "Missing 'funnel' flag.", "output": ""}
+    if info.get("include_https") != "yes" or not info.get("primary_port"):
+        return {"ok": False, "name": name, "action": "funnel", "status": "error",
+                "error": "This pod has no HTTPS serve to expose (no port).",
+                "output": ""}
+    funnel = bool(data["funnel"])
+    conflict = _op_begin(name, "funnel")
+    if conflict:
+        return {"ok": False, "name": name, "action": "funnel", "status": "busy",
+                "error": f"{conflict} is already in progress for {name}.", "output": ""}
+    try:
+        # 1. Persist: re-render .config.json + scripts with the new flag.
+        #    create.sh only generates files — the running pod is untouched.
+        config = config_from_info(info)
+        config["funnel"] = "yes" if funnel else "no"
+        result = run_create(config)
+        output = result.stdout + result.stderr
+        if result.returncode != 0:
+            return {"ok": False, "name": name, "action": "funnel",
+                    "status": "render failed", "error": "create.sh failed",
+                    "output": output}
+
+        # 2. Live apply: rewrite the mounted serve config in place.
+        serve_path = os.path.join(PODS_DIR, name, "tailscale-serve.json")
+        with open(serve_path, "w") as f:
+            json.dump(_serve_config(info["primary_port"], funnel), f, indent=2)
+
+        # 3. Best-effort readback so ACL refusals are visible: give the
+        #    watcher a moment, then show the sidecar's own view of serve.
+        if ps_all().get(f"tailscale-{name}", ("", 0))[0] == "running":
+            time.sleep(2)
+            r = podman("exec", f"tailscale-{name}", "tailscale", "serve",
+                       "status", timeout=15)
+            output += r.stdout + r.stderr
+        else:
+            output += "\n(sidecar not running — applies at next start)"
+        state = "public" if funnel else "private"
+        return {"ok": True, "name": name, "action": "funnel", "status": state,
+                "error": None, "output": output}
+    finally:
+        _op_end(name)
 
 
 # =========================================================================
@@ -1448,7 +1511,8 @@ def api_post(path, data):
     m = re.fullmatch(r"/api/network/([a-z0-9][a-z0-9-]*)", path)
     if m:
         result = op_network_set(m.group(1), data)
-        return (200 if result["ok"] else 400), result
+        code = 200 if result["ok"] else (409 if result.get("status") == "busy" else 400)
+        return code, result
 
     if path == "/api/monitor/setup":
         result = op_monitor_setup(data)

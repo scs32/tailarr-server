@@ -86,7 +86,7 @@ export const api = {
   network: () =>
     getJSON<{ network: NetworkEntry[] }>("/api/network").then((d) => d.network),
 
-  networkSet: (pod: string, body: { tailscale?: boolean; https?: boolean }) =>
+  networkSet: (pod: string, body: { funnel: boolean }) =>
     postJSON<ActionResult>(`/api/network/${pod}`, body),
 
   monitor: () => getJSON<MonitorStatus>("/api/monitor"),
