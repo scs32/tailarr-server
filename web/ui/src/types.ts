@@ -3,7 +3,16 @@
 export type PodState = "running" | "stopped" | "error";
 
 // In-flight server-side action on a pod (survives SPA reloads).
-export type PodAction = "start" | "stop" | "update" | "remove" | "reconfigure";
+// "restart" only appears via fleet actions (POST /api/fleet).
+export type PodAction =
+  | "start"
+  | "stop"
+  | "restart"
+  | "update"
+  | "remove"
+  | "reconfigure";
+
+export type FleetAction = "stop" | "start" | "restart";
 
 export interface Pod {
   name: string;
@@ -132,6 +141,16 @@ export interface ActionResult {
   status: string;
   error: string | null;
   output: string;
+}
+
+// POST /api/fleet — bulk stop/start/restart of every non-controller pod.
+export interface FleetResult {
+  ok: boolean;
+  action: string;
+  status: string;
+  error: string | null;
+  results: ActionResult[];
+  skipped: { name: string; busy: string }[];
 }
 
 export interface Info {

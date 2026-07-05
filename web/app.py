@@ -25,7 +25,9 @@ import mimetypes
 import os
 import re
 import shutil
+import signal
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -586,6 +588,63 @@ def _run_action(name, action):
             "error": None, "output": output}
 
 
+def op_fleet(action):
+    """stop / start / restart every deployed pod except the controller.
+
+    Claims all targets up front — so the whole fleet reads as busy in
+    /api/pods while this request works through them sequentially — then
+    releases each pod as it finishes. Pods already mid-action from another
+    request are skipped, not queued. The controller pod is never touched:
+    stopping it (and the podhost VM around it) is a host-side operation.
+    """
+    if action not in ("stop", "start", "restart"):
+        return {"ok": False, "action": action, "status": "error",
+                "error": "Unknown fleet action.", "results": [], "skipped": []}
+    running = running_names()
+    targets, skipped = [], []
+    for name in deployed_services():
+        if name in CONTROLLER_PODS:
+            continue
+        # Skip no-ops so cards don't flash busy for nothing: a fully-down
+        # pod has nothing to stop (stop.sh covers the sidecar too), and a
+        # running pod needs no start.
+        if action == "stop" and name not in running \
+                and f"tailscale-{name}" not in running:
+            continue
+        if action == "start" and name in running:
+            continue
+        conflict = _op_begin(name, action)
+        if conflict:
+            skipped.append({"name": name, "busy": conflict})
+        else:
+            targets.append(name)
+    results = []
+    try:
+        for name in targets:
+            try:
+                if action == "restart":
+                    r = _run_action(name, "stop")
+                    if r["ok"]:
+                        r = _run_action(name, "start")
+                    r["action"] = "restart"
+                else:
+                    r = _run_action(name, action)
+            except subprocess.TimeoutExpired as e:
+                r = {"ok": False, "name": name, "action": action,
+                     "status": "timeout", "error": str(e), "output": ""}
+            results.append(r)
+            _op_end(name)
+    finally:
+        for name in targets:  # release anything left claimed if a pod blew up
+            _op_end(name)
+    failed = [r["name"] for r in results if not r["ok"]]
+    return {"ok": not failed, "action": action,
+            "status": "ok" if not failed else "partial failure",
+            "error": None if not failed
+            else f"{action} failed for: {', '.join(failed)}",
+            "results": results, "skipped": skipped}
+
+
 def reconfig_data_from_info(info):
     """Editable config fields from a saved .config.json, in the shape
     op_reconfigure consumes. Share-derived volumes are stripped from
@@ -1105,6 +1164,10 @@ def api_post(path, data):
         code = 200 if result["ok"] else (409 if result.get("status") == "busy" else 400)
         return code, result
 
+    if path == "/api/fleet":
+        result = op_fleet((data.get("do") or "").strip())
+        return (200 if result["ok"] else 400), result
+
     if path == "/api/updates/refresh":
         return 200, {"ok": True, "status": maybe_check_updates(force=True)}
 
@@ -1218,6 +1281,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    # As PID 1 in the container, default signal dispositions don't apply:
+    # SIGTERM would be ignored and every `podman stop` waits out its full
+    # grace period before SIGKILL. Exit promptly instead — in-flight pod
+    # actions are subprocesses of the stop already in progress anyway.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     print(f"Podscale web UI on :{PORT} (pods dir: {PODS_DIR})")
     maybe_check_updates()  # kick a first check if the cache is stale
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()

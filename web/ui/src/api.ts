@@ -4,6 +4,8 @@
 import type {
   ActionResult,
   CatalogItem,
+  FleetAction,
+  FleetResult,
   Info,
   InstallRequest,
   InstallResult,
@@ -45,6 +47,9 @@ export const api = {
 
   action: (name: string, action: "start" | "stop" | "update" | "remove") =>
     postJSON<ActionResult>(`/api/pods/${name}/action`, { do: action }),
+
+  fleet: (action: FleetAction) =>
+    postJSON<FleetResult>("/api/fleet", { do: action }),
 
   podConfig: (name: string) =>
     getJSON<PodConfigResult>(`/api/pods/${name}/config`),

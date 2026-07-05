@@ -6,6 +6,7 @@ import { PodGlyph, SpinnerIcon } from "./Icons";
 const BUSY_LABEL: Record<string, string> = {
   start: "starting…",
   stop: "stopping…",
+  restart: "restarting…",
   update: "updating…",
   remove: "removing…",
   reconfigure: "applying config…",

@@ -125,6 +125,12 @@ code, data = post("/api/pods/nope/action", {"do": "start"})
 check(code == 400 and data["ok"] is False, "action on unknown pod -> 400")
 code, data = post("/api/shares", {"do": "bogus"})
 check(code == 400 and "Unknown action" in data["error"], "bad share action -> 400")
+code, data = post("/api/fleet", {"do": "bogus"})
+check(code == 400 and "Unknown fleet action" in data["error"], "bad fleet action -> 400")
+# No podman here, so nothing reads as running: fleet stop is a clean no-op.
+code, data = post("/api/fleet", {"do": "stop"})
+check(code == 200 and data["ok"] and data["results"] == [],
+      "fleet stop with nothing running -> 200 no-op")
 
 try:
     get("/api/nope")

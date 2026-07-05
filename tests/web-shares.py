@@ -181,6 +181,25 @@ if not mon["available"]:
 check(app.op_monitor_pod("nope", "add")["ok"] is False,
       "monitor pod: unknown pod rejected")
 
+# --- fleet actions: bulk stop/start/restart, controller excluded ---
+check(app.op_fleet("bogus")["error"] == "Unknown fleet action.",
+      "fleet: unknown action rejected")
+r = app.op_fleet("stop")  # stubbed podman ps lists nothing running -> no-op
+check(r["ok"] and r["results"] == [], "fleet stop: skips already-down pods")
+r = app.op_fleet("start")
+check(r["ok"] and [x["name"] for x in r["results"]] == ["testpod"],
+      "fleet start: starts stopped pods, controller excluded")
+r = app.op_fleet("restart")
+check(r["ok"] and [x["action"] for x in r["results"]] == ["restart"],
+      "fleet restart: stop+start per pod")
+check(app.pod_busy("testpod") is None, "fleet: claims released after the run")
+app._op_begin("testpod", "update")
+r = app.op_fleet("restart")
+check(r["ok"] and r["results"] == []
+      and r["skipped"] == [{"name": "testpod", "busy": "update"}],
+      "fleet: busy pod skipped, not queued")
+app._op_end("testpod")
+
 # --- remove: refuses controller, deletes a normal pod's dir ---
 check(app.op_action("homepod", "remove")["status"] == "refused",
       "remove: controller refused")
