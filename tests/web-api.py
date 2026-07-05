@@ -4,8 +4,8 @@
 Boots the real ThreadingHTTPServer against the create.sh engine in a temp
 PODS_DIR and drives it over HTTP. No podman/containers needed: installing only
 generates scripts, and pod-state reads degrade gracefully when podman is absent
-(podman() catches FileNotFoundError). Tailscale is disabled so no auth key or
-network sidecar is required.
+(podman() catches FileNotFoundError). Tailscale is mandatory, so installs
+carry a dummy auth key (only stored in a key file, never used offline).
 """
 import json
 import os
@@ -90,8 +90,9 @@ check(all("name" in c and "image" in c and "installed" in c for c in data["catal
 # --- install a custom pod over the API ---
 code, data = post("/api/install", {
     "custom": True, "service": "apitest", "image": "docker.io/alpine:latest",
-    "command": "sleep infinity", "tailscale": False, "https": False,
+    "command": "sleep infinity",
     "volumes": {"/config": f"{pods}/apitest/config"},
+    "authkey": "tskey-test-api-key",
 })
 check(code == 200 and data["ok"] and data["name"] == "apitest",
       "POST /api/install (custom) succeeds")
@@ -150,8 +151,8 @@ code, data = get("/api/catalog")
 ext = [c for c in data["catalog"] if c["name"] == "extpod"]
 check(bool(ext) and ext[0]["source"] == "community",
       "source service merged into the catalog, tagged with its source")
-code, data = post("/api/install", {"service": "extpod", "tailscale": False,
-                                    "https": False, "volumes": {}})
+code, data = post("/api/install", {"service": "extpod", "volumes": {},
+                                    "authkey": "tskey-test-api-key"})
 check(code == 200 and data["ok"], "install a service that came from a source")
 check(app.pod_config("extpod")["image"] == "docker.io/alpine:latest",
       "source service resolved from the merged catalog and installed")
