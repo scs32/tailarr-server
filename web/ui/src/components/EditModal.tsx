@@ -4,6 +4,7 @@ import { api } from "../api";
 import { parsePairs, parseVolumes, pairsToText } from "../lib/pairs";
 import { Field, FormSection } from "./Form";
 import { SharePicker } from "./SharePicker";
+import { BackupsPanel } from "./BackupsPanel";
 import { Alert } from "./Alert";
 import { SpinnerIcon } from "./Icons";
 
@@ -159,6 +160,8 @@ export function EditModal({
             </FormSection>
 
             <SharePicker shares={shares} picked={picked} onChange={setPicked} />
+
+            <BackupsPanel name={name} controller={controller} onChanged={onChanged} />
 
             {controller && (
               <div style={{ marginTop: "var(--sp-4)" }}>

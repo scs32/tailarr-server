@@ -10,6 +10,8 @@ const BUSY_LABEL: Record<string, string> = {
   update: "updating…",
   remove: "removing…",
   reconfigure: "applying config…",
+  backup: "backing up…",
+  restore: "restoring…",
 };
 
 // State is conveyed by the card tint (green running / amber stopped / red

@@ -187,6 +187,58 @@ check(app.op_exec("testpod", "ls")["status"] == "busy",
       "exec: refused while a lifecycle op is in flight")
 app._op_end("testpod")
 
+# --- backups: stop -> tar -> start, index + retention, restore in place ---
+check(app.op_backup("nope")["error"] == "Unknown service.",
+      "backup: unknown pod rejected")
+check(app.op_backup("homepod")["status"] == "refused",
+      "backup: controller refused")
+r = app.op_backup("testpod", reason="pre-test")
+check(r["ok"] and r["backup"]["reason"] == "pre-test", "backup succeeds")
+b = app.status_backups("testpod")
+check(len(b) == 1 and b[0]["size"] > 0 and len(b[0]["sha256"]) == 64,
+      "backup: indexed with size + checksum")
+tar_path = app._backup_path("testpod", b[0]["ts"])
+check(os.path.isfile(tar_path), "backup: tarball exists on disk")
+check(not os.path.exists(tar_path + ".tmp"), "backup: no temp file left behind")
+
+app._op_begin("testpod", "update")
+check(app.op_backup("testpod")["status"] == "busy",
+      "backup: refused while another op is in flight")
+app._op_end("testpod")
+
+# restore: mutate state, restore, confirm the snapshot's state is back
+marker = os.path.join(pods, "testpod", "marker.txt")
+info_before = app.pod_config("testpod")
+with open(marker, "w") as f:
+    f.write("added after the snapshot")
+r = app.op_backup_restore("testpod", b[0]["ts"])
+check(r["ok"], "restore succeeds")
+check(not os.path.exists(marker), "restore: post-snapshot changes are gone")
+check(app.pod_config("testpod") == info_before, "restore: .config.json preserved")
+check(os.path.isfile(os.path.join(pods, "testpod", "run.sh")),
+      "restore: scripts re-rendered")
+check(app.op_backup_restore("testpod", "99999999-999999")["error"] == "Unknown backup.",
+      "restore: unknown snapshot rejected")
+
+# corrupt tar -> checksum refusal
+with open(tar_path, "ab") as f:
+    f.write(b"corruption")
+check("corrupt" in app.op_backup_restore("testpod", b[0]["ts"])["error"],
+      "restore: corrupt tarball refused by checksum")
+
+# retention: newest BACKUP_KEEP_DAILY kept, older collapse to one per week
+fake = [{"ts": f"202601{d:02d}-000000", "image": "", "digest": "",
+         "size": 1, "sha256": "x", "reason": ""} for d in range(1, 15)]
+kept = app._trim_backups("trimtest", list(fake))
+check(len(kept) <= app.BACKUP_KEEP_DAILY + app.BACKUP_KEEP_WEEKLY,
+      "retention: bounded by daily+weekly caps")
+check(max(e["ts"] for e in fake) in {e["ts"] for e in kept},
+      "retention: newest snapshot always kept")
+
+r = app.op_backup_delete("testpod", b[0]["ts"])
+check(r["ok"] and not os.path.exists(tar_path), "backup delete removes tar + index")
+check(app.status_backups("testpod") == [], "backup delete: index empty")
+
 # --- network status + set ---
 net = {e["name"]: e for e in app.status_network()}
 check(net["testpod"]["tailscale"] is True and net["testpod"]["ip"] == "",

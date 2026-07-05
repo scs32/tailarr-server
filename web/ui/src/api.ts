@@ -3,6 +3,7 @@
 
 import type {
   ActionResult,
+  BackupEntry,
   CatalogItem,
   FleetAction,
   FleetResult,
@@ -47,6 +48,23 @@ export const api = {
 
   exec: (name: string, cmd: string) =>
     postJSON<ActionResult>(`/api/pods/${name}/exec`, { cmd }),
+
+  backups: (name: string) =>
+    getJSON<{ name: string; backups: BackupEntry[] }>(
+      `/api/pods/${name}/backups`,
+    ).then((d) => d.backups),
+
+  backupCreate: (name: string, reason = "") =>
+    postJSON<ActionResult & { backup?: BackupEntry }>(
+      `/api/pods/${name}/backups`,
+      { reason },
+    ),
+
+  backupRestore: (name: string, ts: string) =>
+    postJSON<ActionResult>(`/api/pods/${name}/backups/restore`, { ts }),
+
+  backupDelete: (name: string, ts: string) =>
+    postJSON<ActionResult>(`/api/pods/${name}/backups/delete`, { ts }),
 
   action: (name: string, action: "start" | "stop" | "update" | "remove") =>
     postJSON<ActionResult>(`/api/pods/${name}/action`, { do: action }),

@@ -10,7 +10,9 @@ export type PodAction =
   | "restart"
   | "update"
   | "remove"
-  | "reconfigure";
+  | "reconfigure"
+  | "backup"
+  | "restore";
 
 export type FleetAction = "stop" | "start" | "restart";
 
@@ -128,6 +130,16 @@ export interface Share {
   mode: "read-only" | "read-write";
   visible: boolean;
   used_by: string[];
+}
+
+// One per-pod snapshot (GET /api/pods/<name>/backups).
+export interface BackupEntry {
+  ts: string; // YYYYMMDD-HHMMSS
+  image: string;
+  digest: string;
+  size: number; // bytes
+  sha256: string;
+  reason: string;
 }
 
 export interface ActionResult {

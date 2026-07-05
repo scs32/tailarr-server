@@ -20,6 +20,7 @@ Expects (provided by the container image / bootstrap script):
   - host podman socket mounted, CONTAINER_HOST pointing at it
 """
 
+import hashlib
 import json
 import mimetypes
 import os
@@ -57,6 +58,17 @@ _catalog_cache = {}  # url -> (expires_at, services, error)
 # cached here. Refreshed daily (piggybacked on /api/pods) or on demand.
 UPDATES_FILE = os.path.join(PODS_DIR, ".updates.json")
 UPDATES_TTL = 24 * 3600
+
+# Per-pod app-data snapshots: stop -> tar the pod dir -> start. The pod dir
+# is the pod's entire mutable state (only media pierces the barrier), so one
+# tar is an application-consistent backup — including the Tailscale identity,
+# which an in-place restore deliberately brings back. Dot-prefixed names keep
+# both invisible to deployed_services() (it keys on <dir>/run.sh).
+BACKUPS_FILE = os.path.join(PODS_DIR, ".backups.json")
+BACKUPS_DIR = os.path.join(PODS_DIR, ".backups")
+BACKUP_KEEP_DAILY = 7   # newest N always kept
+BACKUP_KEEP_WEEKLY = 4  # plus newest-per-ISO-week for N older weeks
+BACKUP_TS_RE = re.compile(r"[0-9]{8}-[0-9]{6}")
 _updates_lock = threading.Lock()
 _updates_running = False
 
@@ -360,6 +372,225 @@ def mark_image_fresh(image):
     if image in data.get("images", {}):
         data["images"][image] = {"update": False, "error": None}
         save_updates(data)
+
+
+# =========================================================================
+# Per-pod backups (stop -> tar pod dir -> start)
+# =========================================================================
+def load_backups():
+    try:
+        with open(BACKUPS_FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_backups(data):
+    tmp = BACKUPS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, BACKUPS_FILE)
+
+
+def _local_digest(image):
+    r = podman("image", "inspect", image, "--format",
+               "{{range .RepoDigests}}{{.}}\n{{end}}", timeout=30)
+    if r.returncode != 0:
+        return ""
+    digests = [d.strip() for d in r.stdout.splitlines() if d.strip()]
+    return digests[0] if digests else ""
+
+
+def _sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _backup_path(name, ts):
+    return os.path.join(BACKUPS_DIR, name, f"{ts}.tar")
+
+
+def _trim_backups(name, entries):
+    """Retention: keep the newest BACKUP_KEEP_DAILY, plus the newest snapshot
+    per ISO week for BACKUP_KEEP_WEEKLY older weeks. Deletes trimmed tars."""
+    entries.sort(key=lambda e: e["ts"], reverse=True)
+    keep = list(entries[:BACKUP_KEEP_DAILY])
+    weeks = []
+    for e in entries[BACKUP_KEEP_DAILY:]:
+        week = time.strftime(
+            "%G-%V", time.strptime(e["ts"], "%Y%m%d-%H%M%S"))
+        if week not in weeks:  # entries are newest-first: first hit per week wins
+            if len(weeks) < BACKUP_KEEP_WEEKLY:
+                weeks.append(week)
+                keep.append(e)
+    for e in entries:
+        if e not in keep:
+            try:
+                os.remove(_backup_path(name, e["ts"]))
+            except OSError:
+                pass
+    return keep
+
+
+def status_backups(name):
+    entries = load_backups().get(name, [])
+    return sorted(entries, key=lambda e: e["ts"], reverse=True)
+
+
+def op_backup(name, reason=""):
+    """Application-consistent snapshot: stop -> tar the pod dir -> start.
+
+    One busy claim covers the whole run so the card reads "backup" fleet-wide
+    and racing lifecycle ops get a 409. The pod is ALWAYS restarted if it was
+    running, even when the tar fails.
+    """
+    if name not in deployed_services():
+        return {"ok": False, "name": name, "action": "backup", "status": "error",
+                "error": "Unknown service.", "output": ""}
+    if name in CONTROLLER_PODS:
+        return {"ok": False, "name": name, "action": "backup", "status": "refused",
+                "error": "The controller can't stop itself to snapshot its own "
+                         "directory.", "output": ""}
+    conflict = _op_begin(name, "backup")
+    if conflict:
+        return {"ok": False, "name": name, "action": "backup", "status": "busy",
+                "error": f"{conflict} is already in progress for {name}.", "output": ""}
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    tar_dir = os.path.join(BACKUPS_DIR, name)
+    tmp_path = os.path.join(tar_dir, f".tmp-{ts}.tar")
+    output = ""
+    was_running = False
+    try:
+        running = running_names()
+        was_running = name in running or f"tailscale-{name}" in running
+        if was_running:
+            r = _run_action(name, "stop")
+            output += r["output"]
+            if not r["ok"]:
+                return {"ok": False, "name": name, "action": "backup",
+                        "status": "stop failed", "error": "Couldn't stop the pod "
+                        "for a consistent snapshot.", "output": output}
+        os.makedirs(tar_dir, exist_ok=True)
+        try:
+            tar = subprocess.run(["tar", "-cf", tmp_path, "-C", PODS_DIR, name],
+                                 capture_output=True, text=True, timeout=600)
+        except subprocess.TimeoutExpired:
+            tar = subprocess.CompletedProcess([], 1, "", "tar timed out")
+        output += tar.stdout + tar.stderr
+        if tar.returncode != 0:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            return {"ok": False, "name": name, "action": "backup",
+                    "status": f"exit {tar.returncode}", "error": "tar failed",
+                    "output": output}
+        entry = {
+            "ts": ts,
+            "image": (pod_config(name) or {}).get("image", ""),
+            "digest": _local_digest((pod_config(name) or {}).get("image", "")),
+            "size": os.path.getsize(tmp_path),
+            "sha256": _sha256_file(tmp_path),
+            "reason": (reason or "").strip()[:200],
+        }
+        os.replace(tmp_path, _backup_path(name, ts))
+        backups = load_backups()
+        backups[name] = _trim_backups(name, backups.get(name, []) + [entry])
+        save_backups(backups)
+        return {"ok": True, "name": name, "action": "backup", "status": "ok",
+                "error": None, "output": output, "backup": entry}
+    finally:
+        if was_running:
+            _run_action(name, "start")
+        _op_end(name)
+
+
+def op_backup_restore(name, ts):
+    """In-place restore: stop -> wipe the pod dir -> untar -> re-render -> start.
+
+    The tar carries ./tailscale/ so the pod comes back with the SAME tailnet
+    identity — that's the point of in-place restore. (Restore-as-clone would
+    have to wipe tailscale/ and re-enroll; not offered here.)
+    """
+    if name not in deployed_services():
+        return {"ok": False, "name": name, "action": "restore", "status": "error",
+                "error": "Unknown service.", "output": ""}
+    if name in CONTROLLER_PODS:
+        return {"ok": False, "name": name, "action": "restore", "status": "refused",
+                "error": "Not restoring the controller from itself.", "output": ""}
+    entry = next((e for e in load_backups().get(name, [])
+                  if e["ts"] == ts), None)
+    if not entry or not BACKUP_TS_RE.fullmatch(ts or ""):
+        return {"ok": False, "name": name, "action": "restore", "status": "error",
+                "error": "Unknown backup.", "output": ""}
+    tar_path = _backup_path(name, ts)
+    if not os.path.isfile(tar_path):
+        return {"ok": False, "name": name, "action": "restore", "status": "error",
+                "error": "Backup file is missing.", "output": ""}
+    if _sha256_file(tar_path) != entry.get("sha256"):
+        return {"ok": False, "name": name, "action": "restore", "status": "error",
+                "error": "Backup file is corrupt (checksum mismatch).", "output": ""}
+    conflict = _op_begin(name, "restore")
+    if conflict:
+        return {"ok": False, "name": name, "action": "restore", "status": "busy",
+                "error": f"{conflict} is already in progress for {name}.", "output": ""}
+    output = ""
+    try:
+        r = _run_action(name, "stop")
+        output += r["output"]
+        svc_dir = os.path.join(PODS_DIR, name)
+        shutil.rmtree(svc_dir, ignore_errors=True)
+        try:
+            tar = subprocess.run(["tar", "-xf", tar_path, "-C", PODS_DIR],
+                                 capture_output=True, text=True, timeout=600)
+        except subprocess.TimeoutExpired:
+            tar = subprocess.CompletedProcess([], 1, "", "tar timed out")
+        output += tar.stdout + tar.stderr
+        if tar.returncode != 0:
+            return {"ok": False, "name": name, "action": "restore",
+                    "status": f"exit {tar.returncode}", "error": "untar failed",
+                    "output": output}
+        # Re-render run.sh/stop.sh/... from the restored .config.json so the
+        # scripts match the current engine (handles engine upgrades since the
+        # snapshot was taken).
+        info = pod_config(name)
+        if info:
+            rc = run_create(config_from_info(info))
+            output += rc.stdout + rc.stderr
+            if rc.returncode != 0:
+                return {"ok": False, "name": name, "action": "restore",
+                        "status": "render failed",
+                        "error": "Restored data, but re-rendering scripts failed.",
+                        "output": output}
+        r = _run_action(name, "start")
+        output += r["output"]
+        return {"ok": r["ok"], "name": name, "action": "restore",
+                "status": r["status"], "error": None, "output": output}
+    finally:
+        _op_end(name)
+
+
+def op_backup_delete(name, ts):
+    backups = load_backups()
+    entries = backups.get(name, [])
+    entry = next((e for e in entries if e["ts"] == ts), None)
+    if not entry or not BACKUP_TS_RE.fullmatch(ts or ""):
+        return {"ok": False, "name": name, "action": "backup-delete",
+                "status": "error", "error": "Unknown backup.", "output": ""}
+    backups[name] = [e for e in entries if e["ts"] != ts]
+    if not backups[name]:
+        del backups[name]
+    save_backups(backups)
+    try:
+        os.remove(_backup_path(name, ts))
+    except OSError:
+        pass
+    return {"ok": True, "name": name, "action": "backup-delete", "status": "ok",
+            "error": None, "output": ""}
 
 
 # =========================================================================
@@ -1119,6 +1350,9 @@ def api_get(path):
     m = re.fullmatch(r"/api/pods/([a-z0-9][a-z0-9-]*)/logs", path)
     if m:
         return 200, op_action(m.group(1), "logs")
+    m = re.fullmatch(r"/api/pods/([a-z0-9][a-z0-9-]*)/backups", path)
+    if m:
+        return 200, {"name": m.group(1), "backups": status_backups(m.group(1))}
     m = re.fullmatch(r"/api/pods/([a-z0-9][a-z0-9-]*)/config", path)
     if m:
         result = op_pod_config(m.group(1))
@@ -1180,6 +1414,23 @@ def api_post(path, data):
         result = op_exec(m.group(1), data.get("cmd") or "")
         code = 200 if result["ok"] else (409 if result.get("status") == "busy" else 400)
         return code, result
+
+    m = re.fullmatch(r"/api/pods/([a-z0-9][a-z0-9-]*)/backups", path)
+    if m:
+        result = op_backup(m.group(1), data.get("reason") or "")
+        code = 200 if result["ok"] else (409 if result.get("status") == "busy" else 400)
+        return code, result
+
+    m = re.fullmatch(r"/api/pods/([a-z0-9][a-z0-9-]*)/backups/restore", path)
+    if m:
+        result = op_backup_restore(m.group(1), (data.get("ts") or "").strip())
+        code = 200 if result["ok"] else (409 if result.get("status") == "busy" else 400)
+        return code, result
+
+    m = re.fullmatch(r"/api/pods/([a-z0-9][a-z0-9-]*)/backups/delete", path)
+    if m:
+        result = op_backup_delete(m.group(1), (data.get("ts") or "").strip())
+        return (200 if result["ok"] else 400), result
 
     m = re.fullmatch(r"/api/pods/([a-z0-9][a-z0-9-]*)/config", path)
     if m:
