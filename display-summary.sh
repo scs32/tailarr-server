@@ -86,25 +86,16 @@ display_access_info() {
     local service_info="$1"
     
     local service=$(jq -r '.service' <<<"$service_info")
-    local include_ts=$(jq -r '.include_tailscale' <<<"$service_info")
     local primary_port=$(jq -r '.primary_port' <<<"$service_info")
 
     echo ""
     echo "Access Information:"
     echo "------------------"
-
-    if [[ "$include_ts" == "yes" ]]; then
-        echo "  Once deployed, the service will be a device on your tailnet"
-        echo "  (hostname: $service)."
-        if [[ -n "$primary_port" ]]; then
-            echo "    $service: port $primary_port on the service's MagicDNS name"
-        fi
-        echo ""
-        echo "  Note: The full MagicDNS URL is displayed after running ./run.sh"
-    else
-        echo "  Service will be accessible via local network only"
-        if [[ -n "$primary_port" ]]; then
-            echo "    Port: $primary_port"
-        fi
+    echo "  Once deployed, the service will be a device on your tailnet"
+    echo "  (hostname: $service)."
+    if [[ -n "$primary_port" ]]; then
+        echo "    $service: HTTPS on the service's MagicDNS name (tailscale serve)"
     fi
+    echo ""
+    echo "  Note: The full MagicDNS URL is displayed after running ./run.sh"
 }

@@ -98,11 +98,6 @@ export function InstallResultView({
       try {
         const net = await api.network();
         const e = net.find((x) => x.name === name);
-        if (e && !e.tailscale) {
-          setEntry(e);
-          setPhase("running"); // no tailnet identity; ports published locally
-          return;
-        }
         if (e?.dns_name) {
           setEntry(e);
           setPhase("ready");
@@ -165,10 +160,8 @@ export function InstallResultView({
       )}
       {phase === "running" && (
         <Alert kind="ok">
-          {name} is running.
-          {entry?.tailscale === false
-            ? " Its ports are published on the host (no tailnet identity)."
-            : " Tailnet enrollment is still settling — the Network tab will show its URL shortly."}
+          {name} is running. Tailnet enrollment is still settling — the Network
+          tab will show its URL shortly.
         </Alert>
       )}
 

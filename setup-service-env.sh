@@ -10,27 +10,23 @@ setup_service_environment() {
     local service_dir
     local volumes_json
     local env_vars_json
-    local include_ts
     local puid
     local pgid
 
     service_dir=$(jq -r '.service_dir' <<<"$service_info")
     volumes_json=$(jq -c '.volumes' <<<"$service_info")
     env_vars_json=$(jq -c '.environment' <<<"$service_info")
-    include_ts=$(jq -r '.include_tailscale' <<<"$service_info")
     puid=$(jq -r '.environment.PUID // ""' <<<"$service_info")
     pgid=$(jq -r '.environment.PGID // ""' <<<"$service_info")
-    
+
     # Create main service directory
     log_info "Creating service directory: $service_dir"
     ensure_directory "$service_dir" "service directory"
 
-    # Create Tailscale state directory if needed
-    if [[ "$include_ts" == "yes" ]]; then
-        log_info "Setting up Tailscale directory"
-        ensure_directory "$service_dir/tailscale" "Tailscale state directory"
-    fi
-    
+    # Create the Tailscale state directory (every pod has a sidecar)
+    log_info "Setting up Tailscale directory"
+    ensure_directory "$service_dir/tailscale" "Tailscale state directory"
+
     # Create volume directories
     log_info "Creating volume directories"
     create_volume_directories "$volumes_json" "$puid" "$pgid"

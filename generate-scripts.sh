@@ -38,13 +38,11 @@ generate_run_script() {
     local ts_image=$(jq -r '.ts_image' <<<"$service_info")
     local restart_policy=$(jq -r '.restart_policy' <<<"$service_info")
     local auth_key_file=$(jq -r '.auth_key_file' <<<"$service_info")
-    local include_ts=$(jq -r '.include_tailscale' <<<"$service_info")
-    local include_https=$(jq -r '.include_https // "no"' <<<"$service_info")
     local primary_port=$(jq -r '.primary_port' <<<"$service_info")
-    
+
     # Load the run script template
     source "$SCRIPT_DIR/generate-run-template.sh"
-    
+
     # Generate content
     local run_content
     run_content=$(generate_run_template \
@@ -53,10 +51,8 @@ generate_run_script() {
         "$ts_image" \
         "$service_image" \
         "$restart_policy" \
-        "$include_ts" \
         "$primary_port" \
-        "$service_info" \
-        "$include_https")
+        "$service_info")
     
     # Write to file
     echo "$run_content" > "$service_dir/run.sh"
@@ -72,7 +68,6 @@ generate_stop_script() {
     
     local service=$(jq -r '.service' <<<"$service_info")
     local service_dir=$(jq -r '.service_dir' <<<"$service_info")
-    local include_ts=$(jq -r '.include_tailscale' <<<"$service_info")
 
     # Create stop script content
     cat > "$service_dir/stop.sh" << EOF
@@ -85,11 +80,9 @@ echo "Stopping services..."
 echo "Stopping $service..."
 podman stop $service 2>/dev/null || true
 
-# Stop Tailscale if included
-if [ "$include_ts" = "yes" ]; then
-    echo "Stopping tailscale-$service..."
-    podman stop tailscale-$service 2>/dev/null || true
-fi
+# Stop the Tailscale sidecar
+echo "Stopping tailscale-$service..."
+podman stop tailscale-$service 2>/dev/null || true
 
 echo "All services stopped"
 EOF
@@ -105,7 +98,6 @@ generate_remove_script() {
     
     local service=$(jq -r '.service' <<<"$service_info")
     local service_dir=$(jq -r '.service_dir' <<<"$service_info")
-    local include_ts=$(jq -r '.include_tailscale' <<<"$service_info")
 
     # Create remove script content
     cat > "$service_dir/remove.sh" << EOF
@@ -118,11 +110,9 @@ echo "Removing services..."
 echo "Removing $service..."
 podman rm -f $service 2>/dev/null || true
 
-# Remove Tailscale if included
-if [ "$include_ts" = "yes" ]; then
-    echo "Removing tailscale-$service..."
-    podman rm -f tailscale-$service 2>/dev/null || true
-fi
+# Remove the Tailscale sidecar
+echo "Removing tailscale-$service..."
+podman rm -f tailscale-$service 2>/dev/null || true
 
 echo "All services removed"
 echo "To reclaim ownership of volumes: sudo chown -R \\\$USER:\\\$USER ."

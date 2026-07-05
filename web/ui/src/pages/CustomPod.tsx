@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import type { InstallResult, Share } from "../types";
 import { api } from "../api";
-import { Field, FormSection, Toggle } from "../components/Form";
+import { Field, FormSection } from "../components/Form";
 import { SharePicker } from "../components/SharePicker";
 import { InstallResultView } from "../components/InstallResultView";
 import { parsePairs, parseVolumes } from "../lib/pairs";
@@ -18,8 +18,6 @@ export function CustomPod() {
   const [envText, setEnvText] = useState("");
   const [volsText, setVolsText] = useState("");
   const [picked, setPicked] = useState<string[]>([]);
-  const [tailscale, setTailscale] = useState(true);
-  const [https, setHttps] = useState(true);
   const [authkey, setAuthkey] = useState("");
 
   const [busy, setBusy] = useState(false);
@@ -47,8 +45,6 @@ export function CustomPod() {
           environment: parsePairs(envText, "="),
           volumes: parseVolumes(volsText),
           shares: picked,
-          tailscale,
-          https,
           authkey,
         }),
       );
@@ -128,22 +124,21 @@ export function CustomPod() {
         </FormSection>
 
         <FormSection title="Networking">
-          <Toggle checked={tailscale} onChange={setTailscale}>
-            Own tailnet identity
-          </Toggle>
-          <Toggle checked={https && tailscale} onChange={setHttps}>
-            HTTPS via <code>tailscale serve</code> (first port)
-          </Toggle>
-          {tailscale && (
-            <Field label="Tailscale auth key">
-              <input
-                className="input"
-                autoComplete="off"
-                value={authkey}
-                onChange={(e) => setAuthkey(e.target.value)}
-              />
-            </Field>
-          )}
+          <p className="field__hint" style={{ margin: 0 }}>
+            Every pod gets its own tailnet identity with HTTPS via{" "}
+            <code>tailscale serve</code> on its first port.
+          </p>
+          <Field
+            label="Tailscale auth key"
+            hint="Leave blank only if this pod already has enrolled Tailscale state."
+          >
+            <input
+              className="input"
+              autoComplete="off"
+              value={authkey}
+              onChange={(e) => setAuthkey(e.target.value)}
+            />
+          </Field>
         </FormSection>
 
         <SharePicker shares={shares} picked={picked} onChange={setPicked} />

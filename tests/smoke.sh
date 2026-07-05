@@ -5,9 +5,11 @@
 # `podman` on PATH, then asserts on the generated scripts and executes them.
 # No real containers, network calls, or Tailscale connections are made.
 #
-# Pass 1: sonarr with Tailscale=yes, shared key mode
-# Pass 2: radarr with Tailscale=no  (ports must be published via -p)
-# Pass 3: lidarr with Tailscale=yes, per-service key mode
+# Tailscale is mandatory: every pod gets its own sidecar + identity, HTTPS via
+# `tailscale serve` whenever it has a port, and no host ports are published.
+# Pass 1: sonarr, shared key mode (first run stores the reusable key)
+# Pass 2: radarr, reuses the stored shared key (no key prompt)
+# Pass 3: lidarr, per-service key mode + a :ro volume
 set -eu
 
 REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
@@ -102,12 +104,10 @@ run_generated() {
 }
 
 # =========================================================================
-echo "=== Pass 1: sonarr (Tailscale=yes, shared key) ==="
+echo "=== Pass 1: sonarr (shared key) ==="
 service_counts sonarr
 {
     printf '1\n'                 # select sonarr
-    printf 'yes\n'               # Tailscale
-    printf '\n'                  # HTTPS via tailscale serve (default yes)
     printf '\n'                  # base path (default)
     printf '1\n'                 # key mode: shared reusable key
     printf '%s\n' "$TEST_KEY"    # auth key (no key file exists yet)
@@ -164,13 +164,13 @@ fi
 pass "no NPM references in generated scripts (deprecated)"
 
 # =========================================================================
-echo "=== Pass 2: radarr (Tailscale=no) ==="
+echo "=== Pass 2: radarr (reuses the stored shared key) ==="
 : > "$PODMAN_LOG"
 service_counts radarr
 {
     printf '2\n'                 # select radarr
-    printf 'no\n'                # Tailscale (no key prompts follow)
     printf '\n'                  # base path (default)
+    printf '\n'                  # reuse the shared auth key stored in pass 1
     blanks "$ENV_COUNT"          # env var defaults
     blanks "$VOL_COUNT"          # volume defaults
     printf '\n'                  # no more volumes
@@ -181,37 +181,39 @@ service_counts radarr
 SVC_DIR="$HOME/Pods/radarr"
 [ -f "$SVC_DIR/run.sh" ] || fail "missing generated file: $SVC_DIR/run.sh"
 
-grep -q -- "-p 7878:7878" "$SVC_DIR/run.sh" \
-    || fail "no-Tailscale run.sh does not publish ports with -p"
-pass "no-Tailscale run.sh publishes ports via -p"
+grep -q -- "--network container:tailscale-radarr" "$SVC_DIR/run.sh" \
+    || fail "run.sh does not share the Tailscale sidecar network namespace"
+pass "run.sh uses --network container:tailscale-radarr"
 
-if grep -q "podman exec tailscale" "$SVC_DIR/run.sh"; then
-    fail "no-Tailscale run.sh still calls podman exec tailscale-*"
+if grep -qE -- "-p [0-9]+:[0-9]+" "$SVC_DIR/run.sh"; then
+    fail "run.sh publishes host ports (should be tailnet-only, no -p)"
 fi
-if grep -q "tailscale" "$SVC_DIR/run.sh" ; then
-    grep "tailscale" "$SVC_DIR/run.sh" | grep -vq "rm -f tailscale-radarr" \
-        && fail "no-Tailscale run.sh references tailscale beyond cleanup"
-fi
-pass "no-Tailscale run.sh contains no tailscale sidecar usage"
+pass "run.sh publishes no host ports"
+
+grep -q "TS_SERVE_CONFIG" "$SVC_DIR/run.sh" || fail "HTTPS via serve not wired for a ported service"
+grep -q '"Proxy": "http://127.0.0.1:7878"' "$SVC_DIR/run.sh" \
+    || fail "serve config does not proxy to the service port"
+pass "HTTPS via tailscale serve wired into the sidecar"
+
+grep -q "Pods/.tailscale_authkey" "$SVC_DIR/run.sh" \
+    || fail "run.sh does not reference the shared key file"
+[ -f "$SVC_DIR/.tailscale_authkey" ] && fail "a per-service key was created in shared mode"
+pass "reused the shared key file (no per-service key)"
 
 run_generated "$SVC_DIR"
-pass "no-Tailscale run.sh executes cleanly (stubbed podman, WAIT=0)"
+pass "run.sh executes cleanly (stubbed podman, WAIT=0)"
 
+grep -q "run -d --name tailscale-radarr" "$PODMAN_LOG" || fail "tailscale sidecar was not started"
 grep -q "run -d --name radarr" "$PODMAN_LOG" || fail "radarr container was not started"
-if grep -q "run -d --name tailscale-radarr" "$PODMAN_LOG"; then
-    fail "a tailscale sidecar was started despite Tailscale=no"
-fi
-pass "only the service container was started"
+pass "run.sh started the tailscale sidecar and service"
 
 # =========================================================================
-echo "=== Pass 3: lidarr (Tailscale=yes, per-service key) ==="
+echo "=== Pass 3: lidarr (per-service key) ==="
 : > "$PODMAN_LOG"
 rm -f "$HOME/Pods/.tailscale_keymode"   # trigger the first-run question again
 service_counts lidarr
 {
     printf '3\n'                 # select lidarr
-    printf 'yes\n'               # Tailscale
-    printf 'no\n'                # no HTTPS for this one
     printf '\n'                  # base path (default)
     printf '2\n'                 # key mode: fresh key per service
     printf '%s\n' "$TEST_KEY2"   # per-service auth key

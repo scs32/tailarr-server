@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import type { CatalogItem, InstallResult, Share } from "../types";
 import { api } from "../api";
-import { Field, FormSection, Toggle } from "../components/Form";
+import { Field, FormSection } from "../components/Form";
 import { Alert } from "../components/Alert";
 import { SharePicker } from "../components/SharePicker";
 import { InstallResultView } from "../components/InstallResultView";
@@ -16,8 +16,6 @@ export function InstallForm() {
   const [env, setEnv] = useState<Record<string, string>>({});
   const [vols, setVols] = useState<Record<string, string>>({});
   const [picked, setPicked] = useState<string[]>([]);
-  const [tailscale, setTailscale] = useState(true);
-  const [https, setHttps] = useState(true);
   const [authkey, setAuthkey] = useState("");
 
   const [busy, setBusy] = useState(false);
@@ -51,8 +49,6 @@ export function InstallForm() {
           environment: env,
           volumes: vols,
           shares: picked,
-          tailscale,
-          https,
           authkey,
         }),
       );
@@ -90,28 +86,21 @@ export function InstallForm() {
 
       <div style={{ maxWidth: 560, marginTop: "var(--sp-6)" }}>
         <FormSection title="Networking">
-          <Toggle checked={tailscale} onChange={setTailscale}>
-            Own tailnet identity
-          </Toggle>
-          <Toggle
-            checked={https && tailscale}
-            onChange={setHttps}
+          <p className="field__hint" style={{ margin: 0 }}>
+            Every pod gets its own tailnet identity with HTTPS via{" "}
+            <code>tailscale serve</code> — https://{item.name}.&lt;tailnet&gt;.ts.net.
+          </p>
+          <Field
+            label="Tailscale auth key"
+            hint="Fresh single-use, non-ephemeral key. Leave blank only if this pod already has enrolled Tailscale state."
           >
-            HTTPS via <code>tailscale serve</code> — https://{item.name}.&lt;tailnet&gt;.ts.net
-          </Toggle>
-          {tailscale && (
-            <Field
-              label="Tailscale auth key"
-              hint="Fresh single-use, non-ephemeral key. Leave blank to reuse an existing key file."
-            >
-              <input
-                className="input"
-                autoComplete="off"
-                value={authkey}
-                onChange={(e) => setAuthkey(e.target.value)}
-              />
-            </Field>
-          )}
+            <input
+              className="input"
+              autoComplete="off"
+              value={authkey}
+              onChange={(e) => setAuthkey(e.target.value)}
+            />
+          </Field>
         </FormSection>
 
         {Object.keys(env).length > 0 && (

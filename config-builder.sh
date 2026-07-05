@@ -19,18 +19,13 @@ build_configuration() {
     spec=$(jq -c --arg name "$service_name" \
         '.[] | select(.name == $name)' "$json_file")
 
-    local image ports restart_policy default_network network_mode
+    local image ports restart_policy network_mode
     image=$(jq -r '.image' <<<"$spec")
     ports=$(jq -c '.ports // {}' <<<"$spec")
     restart_policy=$(jq -r '.restart_policy' <<<"$spec")
-    default_network=$(jq -r '.network_mode // "bridge"' <<<"$spec")
 
-    # Determine network mode based on Tailscale choice
-    if [[ "$tailscale_choice" == "yes" ]]; then
-        network_mode="service:tailscale-$service_name"
-    else
-        network_mode="$default_network"
-    fi
+    # Tailscale is mandatory: the pod always shares its sidecar's namespace.
+    network_mode="service:tailscale-$service_name"
 
     # Assemble environment and volume objects with jq (safe quoting)
     local env_json='{}' vol_json='{}' key

@@ -59,7 +59,7 @@ r = app.op_install({
     "volumes": {"/config": f"{pods}/testpod/config"},
     "network_mode": "bridge", "restart_policy": "unless-stopped",
     "shares": ["media"], "tailscale": False, "https": False,
-    "authkey": "",
+    "authkey": "tskey-test-web-key",
 })
 check(r["ok"], "custom pod install with share succeeds")
 info = app.pod_config("testpod")
@@ -101,12 +101,26 @@ check(app.op_pod_config("nope")["error"] == "Unknown service.",
       "pod config: unknown pod rejected")
 
 # --- edit popup: reconfigure re-renders from edits, then applies via run.sh.
-# Stub podman so run.sh succeeds without a real runtime (Reload = no pull). ---
+# Stub podman so run.sh succeeds without a real runtime (Reload = no pull).
+# A plain `podman ps` (the sidecar liveness check inside run.sh) echoes the
+# names of containers previously `run -d`, so the check passes; but `ps -a`
+# (status/fleet) reports nothing, so pods still read as stopped. WAIT=0 skips
+# the inter-phase sleeps. ---
 stub_dir = tempfile.mkdtemp()
+stub_log = os.path.join(stub_dir, "podman.log")
 with open(os.path.join(stub_dir, "podman"), "w") as f:
-    f.write("#!/bin/sh\nexit 0\n")
+    f.write(
+        "#!/bin/sh\n"
+        f'echo "podman $*" >> "{stub_log}"\n'
+        'if [ "${1:-}" = ps ] && [ "${2:-}" != "-a" ]; then\n'
+        f'  grep -o "run -d --name [^ ]*" "{stub_log}" 2>/dev/null'
+        " | awk '{print $4}' | sort -u\n"
+        "fi\n"
+        "exit 0\n"
+    )
 os.chmod(os.path.join(stub_dir, "podman"), 0o755)
 os.environ["PATH"] = stub_dir + os.pathsep + os.environ["PATH"]
+os.environ["WAIT"] = "0"
 
 r = app.op_reconfigure("testpod", {
     "image": "docker.io/alpine:3.20", "command": "sleep infinity",
@@ -130,7 +144,7 @@ app.op_install({
     "name": "homepod", "custom": True, "image": "docker.io/alpine:latest",
     "command": "sleep infinity", "ports": {}, "environment": {}, "volumes": {},
     "network_mode": "bridge", "restart_policy": "unless-stopped",
-    "shares": [], "tailscale": False, "https": False, "authkey": "",
+    "shares": [], "tailscale": False, "https": False, "authkey": "tskey-test-web-key",
 })
 check(app.op_reconfigure("homepod", {})["status"] == "refused",
       "reconfigure: controller refuses to recreate itself")
@@ -159,9 +173,9 @@ check(app.pod_state("x", {}) == "stopped", "pod_state: absent container = stoppe
 
 # --- network status + set ---
 net = {e["name"]: e for e in app.status_network()}
-check(net["testpod"]["tailscale"] is False and net["testpod"]["ip"] == "",
-      "network: non-ts pod listed without identity")
-r = app.op_network_set("testpod", {"https": False})
+check(net["testpod"]["tailscale"] is True and net["testpod"]["ip"] == "",
+      "network: pod is a tailnet node (identity pending without a live sidecar)")
+r = app.op_network_set("testpod", {})
 check(r["ok"], "network set: re-render succeeds")
 check(app.op_network_set("homepod", {})["status"] == "refused",
       "network set: controller refused")
@@ -182,6 +196,9 @@ check(app.op_monitor_pod("nope", "add")["ok"] is False,
       "monitor pod: unknown pod rejected")
 
 # --- fleet actions: bulk stop/start/restart, controller excluded ---
+# Reset the stub's run-log so `podman ps` reports nothing running here; each
+# run.sh repopulates its own entries when fleet start/restart executes it.
+open(stub_log, "w").close()
 check(app.op_fleet("bogus")["error"] == "Unknown fleet action.",
       "fleet: unknown action rejected")
 r = app.op_fleet("stop")  # stubbed podman ps lists nothing running -> no-op
@@ -213,7 +230,7 @@ app.op_install({
     "image": "docker.io/louislam/uptime-kuma:latest", "command": "",
     "ports": {"3001": "3001"}, "environment": {}, "volumes": {},
     "network_mode": "bridge", "restart_policy": "unless-stopped",
-    "shares": [], "tailscale": False, "https": False, "authkey": "",
+    "shares": [], "tailscale": False, "https": False, "authkey": "tskey-test-web-key",
 })
 kuma_file = os.path.join(pods, ".kuma.json")
 with open(kuma_file, "w") as f:

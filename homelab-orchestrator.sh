@@ -31,39 +31,34 @@ main() {
     local selected_service
     selected_service=$(select_container "$JSON_FILE") || { echo "No container selected. Exiting."; exit 0; }
 
-    # Step 2: Tailscale Configuration
-    echo "=== Tailscale Configuration ==="
-    local tailscale_choice
-    tailscale_choice=$(ask_yes_no "Would you like to enable Tailscale?" "yes") || { echo "Exiting..."; exit 0; }
+    # Tailscale is mandatory: every pod gets its own tailnet identity, and
+    # HTTPS via `tailscale serve` is always on (needs HTTPS Certificates
+    # enabled once in the Tailscale admin console, DNS tab). There is no
+    # plain-HTTP / no-Tailscale mode.
+    local tailscale_choice="yes"
+    local https_choice="yes"
 
-    # Step 3b: HTTPS via tailscale serve (needs HTTPS Certificates enabled
-    # once in the Tailscale admin console, DNS tab)
-    local https_choice="no"
-    if [[ "$tailscale_choice" == "yes" ]]; then
-        https_choice=$(ask_yes_no "Enable HTTPS via Tailscale serve (https://<service>.<tailnet>.ts.net)?" "yes") || { echo "Exiting..."; exit 0; }
-    fi
-
-    # Step 4: Get Base Path (needed to place key files)
+    # Step 2: Get Base Path (needed to place key files)
     echo "=== Path Configuration ==="
     local base_path
     base_path=$(get_input "Base path" "$DEFAULT_BASE_PATH") || { echo "Exiting..."; exit 0; }
 
-    # Step 5: Resolve Tailscale auth key file (if needed).
-    # First run asks whether to store one reusable key for all services or
-    # require a fresh single-use key per service. Only the file path travels
-    # through the config; generated scripts read the key at runtime.
+    # Step 3: Resolve the Tailscale auth key file (always required — a pod
+    # cannot enroll without one). First run asks whether to store one reusable
+    # key for all services or require a fresh single-use key per service. Only
+    # the file path travels through the config; generated scripts read the key
+    # at runtime.
+    echo "=== Tailscale Auth Key ==="
     local auth_key_file=""
-    if [[ "$tailscale_choice" == "yes" ]]; then
-        local key_mode
-        key_mode=$(get_key_mode "$base_path/.tailscale_keymode") || { echo "Exiting..."; exit 0; }
-        local key_file_default
-        if [[ "$key_mode" == "per-service" ]]; then
-            key_file_default="$base_path/$selected_service/.tailscale_authkey"
-        else
-            key_file_default="${TS_AUTHKEY_FILE:-$base_path/.tailscale_authkey}"
-        fi
-        auth_key_file=$(get_auth_key_file "$key_file_default") || { echo "Exiting..."; exit 0; }
+    local key_mode
+    key_mode=$(get_key_mode "$base_path/.tailscale_keymode") || { echo "Exiting..."; exit 0; }
+    local key_file_default
+    if [[ "$key_mode" == "per-service" ]]; then
+        key_file_default="$base_path/$selected_service/.tailscale_authkey"
+    else
+        key_file_default="${TS_AUTHKEY_FILE:-$base_path/.tailscale_authkey}"
     fi
+    auth_key_file=$(get_auth_key_file "$key_file_default") || { echo "Exiting..."; exit 0; }
 
     # Step 6: Collect Environment Variables
     echo "=== Environment Variables ==="

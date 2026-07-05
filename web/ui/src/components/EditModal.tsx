@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { Share } from "../types";
 import { api } from "../api";
 import { parsePairs, parseVolumes, pairsToText } from "../lib/pairs";
-import { Field, FormSection, Toggle } from "./Form";
+import { Field, FormSection } from "./Form";
 import { SharePicker } from "./SharePicker";
 import { Alert } from "./Alert";
 import { SpinnerIcon } from "./Icons";
@@ -30,8 +30,6 @@ export function EditModal({
   const [envText, setEnvText] = useState("");
   const [volsText, setVolsText] = useState("");
   const [memory, setMemory] = useState("");
-  const [tailscale, setTailscale] = useState(false);
-  const [https, setHttps] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
 
   const [busy, setBusy] = useState<"" | "reload" | "update">("");
@@ -54,8 +52,6 @@ export function EditModal({
         setEnvText(pairsToText(c.environment, "="));
         setVolsText(pairsToText(c.volumes, "="));
         setMemory(c.memory_limit);
-        setTailscale(c.tailscale);
-        setHttps(c.https);
         setPicked(c.shares);
         setController(c.controller);
       })
@@ -77,8 +73,6 @@ export function EditModal({
         environment: parsePairs(envText, "="),
         volumes: parseVolumes(volsText),
         memory_limit: memory.trim(),
-        tailscale,
-        https,
         shares: picked,
         pull,
       });
@@ -162,15 +156,6 @@ export function EditModal({
                   placeholder=""
                 />
               </Field>
-            </FormSection>
-
-            <FormSection title="Networking">
-              <Toggle checked={tailscale} onChange={setTailscale}>
-                Own tailnet identity
-              </Toggle>
-              <Toggle checked={https && tailscale} onChange={setHttps}>
-                HTTPS via <code>tailscale serve</code> (first port)
-              </Toggle>
             </FormSection>
 
             <SharePicker shares={shares} picked={picked} onChange={setPicked} />

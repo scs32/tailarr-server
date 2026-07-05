@@ -18,13 +18,10 @@ parse_service_config() {
     restart_policy=$(jq -r '.restart_policy' <<<"$config_json")
     auth_key_file=$(jq -r '.auth_key_file // ""' <<<"$config_json")
     base_path=$(jq -r '.base_path' <<<"$config_json")
-    include_ts=$(jq -r '.include_tailscale' <<<"$config_json")
     local include_https
-    include_https=$(jq -r '.include_https // "no"' <<<"$config_json")
     local command_str memory_limit
     command_str=$(jq -r '.command // ""' <<<"$config_json")
     memory_limit=$(jq -r '.memory_limit // ""' <<<"$config_json")
-    network_mode=$(jq -r '.network_mode // "bridge"' <<<"$config_json")
     
     # Validate required fields
     if [[ -z "$service" || "$service" == "null" ]]; then
@@ -64,7 +61,17 @@ parse_service_config() {
     # Determine primary port
     local primary_port
     primary_port=$(jq -r 'keys[0] // ""' <<<"$ports_json")
-    
+
+    # Tailscale is mandatory: every pod gets its own tailnet identity via a
+    # sidecar, so the network mode is always the sidecar's namespace. HTTPS
+    # via `tailscale serve` is always on whenever there is a port to proxy —
+    # there is no plain-HTTP or no-Tailscale mode. The input's
+    # include_tailscale / include_https / network_mode fields are ignored.
+    include_ts="yes"
+    network_mode="service:tailscale-${service}"
+    include_https="no"
+    [[ -n "$primary_port" ]] && include_https="yes"
+
     # Build service directory path
     local service_dir
     service_dir="${base_path}/${service}"

@@ -448,10 +448,11 @@ def op_install(req):
     """Generate a pod from an install request.
 
     req: name, custom(bool), image, command, ports, environment, volumes,
-         shares(list of names), tailscale(bool), https(bool),
-         authkey, network_mode, restart_policy.
-    Returns {ok, name, error, output}. error set => rejected before the engine;
-    ok False with output set => create.sh failed.
+         shares(list of names), authkey, restart_policy.
+    Every pod enrolls as its own Tailscale node (HTTPS via serve when it has a
+    port), so an auth key is always required unless the pod already has
+    Tailscale state. Returns {ok, name, error, output}. error set => rejected
+    before the engine; ok False with output set => create.sh failed.
     """
     name = (req.get("name") or "").strip()
     custom = bool(req.get("custom"))
@@ -463,20 +464,19 @@ def op_install(req):
         if not image:
             return {"ok": False, "name": name, "error": "An image is required.", "output": ""}
 
-    tailscale = bool(req.get("tailscale"))
-    https = bool(req.get("https")) and tailscale
-
-    auth_key_file = ""
-    if tailscale:
-        auth_key_file = os.path.join(PODS_DIR, name, ".tailscale_authkey")
-        pasted = (req.get("authkey") or "").strip()
-        if pasted:
-            os.makedirs(os.path.dirname(auth_key_file), exist_ok=True)
-            with open(auth_key_file, "w") as f:
-                f.write(pasted + "\n")
-            os.chmod(auth_key_file, 0o600)
-        elif not os.path.isfile(auth_key_file):
-            return {"ok": False, "name": name, "error": "Tailscale enabled but no auth key given.", "output": ""}
+    # Tailscale is mandatory: resolve (and require) an auth key. A pod that
+    # already carries enrolled state in ./tailscale/ can re-run without one.
+    auth_key_file = os.path.join(PODS_DIR, name, ".tailscale_authkey")
+    pasted = (req.get("authkey") or "").strip()
+    if pasted:
+        os.makedirs(os.path.dirname(auth_key_file), exist_ok=True)
+        with open(auth_key_file, "w") as f:
+            f.write(pasted + "\n")
+        os.chmod(auth_key_file, 0o600)
+    elif not os.path.isfile(auth_key_file):
+        return {"ok": False, "name": name,
+                "error": "An auth key is required — every pod enrolls as its own Tailscale node.",
+                "output": ""}
 
     volumes = dict(req.get("volumes") or {})
     reg = load_shares()
@@ -488,18 +488,17 @@ def op_install(req):
             volumes[cpath] = host
             attached.append(sname)
 
-    network_mode = (
-        f"service:tailscale-{name}" if tailscale
-        else req.get("network_mode", "bridge")
-    )
+    # The engine (parse-service-config.sh) forces Tailscale on, derives HTTPS
+    # from the presence of a port, and sets the sidecar network mode itself;
+    # these fields are here for a coherent saved config only.
     config = {
         "container": name,
         "image": image,
-        "network_mode": network_mode,
+        "network_mode": f"service:tailscale-{name}",
         "ports": req.get("ports") or {},
         "restart_policy": req.get("restart_policy", "unless-stopped"),
-        "include_tailscale": "yes" if tailscale else "no",
-        "include_https": "yes" if https else "no",
+        "include_tailscale": "yes",
+        "include_https": "yes" if (req.get("ports") or {}) else "no",
         "auth_key_file": auth_key_file,
         "base_path": PODS_DIR,
         "environment": req.get("environment") or {},
@@ -686,7 +685,7 @@ def op_reconfigure(name, data):
     """Re-render a deployed pod from edited config, then apply it via run.sh.
 
     data: image, command, ports, environment, volumes, memory_limit,
-          tailscale(bool), https(bool), shares(list of names), pull(bool).
+          shares(list of names), pull(bool).
     pull True  => fetch the latest image tag first ("Update").
     pull False => recreate with the current image ("Reload").
     Both save the edits. Refuses the controller (can't recreate itself)."""
@@ -718,9 +717,6 @@ def op_reconfigure(name, data):
 
 
 def _run_reconfigure(name, data, info, image):
-    tailscale = bool(data.get("tailscale"))
-    https = bool(data.get("https")) and tailscale
-
     # Merge registered shares into volumes, exactly as install does.
     volumes = dict(data.get("volumes") or {})
     reg = load_shares()
@@ -732,20 +728,15 @@ def _run_reconfigure(name, data, info, image):
             volumes[cpath] = host
             attached.append(sname)
 
-    # Fall back to bridge when disabling tailscale: the saved network_mode of
-    # a tailscale pod points at the sidecar we are about to stop rendering.
-    base_net = info.get("network_mode", "bridge")
-    if base_net.startswith("service:"):
-        base_net = "bridge"
-    network_mode = f"service:tailscale-{name}" if tailscale else base_net
+    # Tailscale is mandatory; the engine derives HTTPS/network mode itself.
     config = {
         "container": name,
         "image": image,
-        "network_mode": network_mode,
+        "network_mode": f"service:tailscale-{name}",
         "ports": data.get("ports") or {},
         "restart_policy": info.get("restart_policy", "unless-stopped"),
-        "include_tailscale": "yes" if tailscale else "no",
-        "include_https": "yes" if https else "no",
+        "include_tailscale": "yes",
+        "include_https": "yes" if (data.get("ports") or {}) else "no",
         # Existing pods keep their Tailscale identity in ./tailscale/, so no
         # auth key is needed to re-enroll; carry the saved path through.
         "auth_key_file": info.get("auth_key_file",
@@ -1113,10 +1104,8 @@ def _install_req_from_json(data):
             "image": data.get("image", ""), "command": data.get("command", ""),
             "ports": data.get("ports", {}), "environment": data.get("environment", {}),
             "volumes": data.get("volumes", {}),
-            "network_mode": "bridge", "restart_policy": "unless-stopped",
+            "restart_policy": "unless-stopped",
             "shares": data.get("shares", []),
-            "tailscale": bool(data.get("tailscale", True)),
-            "https": bool(data.get("https", True)),
             "authkey": data.get("authkey", ""),
         }, None
     spec = resolve_service(name)
@@ -1134,11 +1123,8 @@ def _install_req_from_json(data):
         "ports": data.get("ports", spec.get("ports", {})),
         "environment": {**spec.get("environment", {}), **data.get("environment", {})},
         "volumes": volumes,
-        "network_mode": spec.get("network_mode", "bridge"),
         "restart_policy": spec.get("restart_policy", "unless-stopped"),
         "shares": data.get("shares", []),
-        "tailscale": bool(data.get("tailscale", True)),
-        "https": bool(data.get("https", True)),
         "authkey": data.get("authkey", ""),
     }, None
 

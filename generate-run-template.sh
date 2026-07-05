@@ -7,20 +7,16 @@ generate_run_template() {
     local ts_image="$3"
     local service_image="$4"
     local restart_policy="$5"
-    local include_ts="$6"
-    local primary_port="$7"
-    local service_info="$8"
-    local include_https="${9:-no}"
+    local primary_port="$6"
+    local service_info="$7"
 
-    local ports_json command_str memory_limit
+    local ports_json command_str memory_limit include_https
     ports_json=$(jq -c '.ports // {}' <<<"$service_info")
     command_str=$(jq -r '.command // ""' <<<"$service_info")
     memory_limit=$(jq -r '.memory_limit // ""' <<<"$service_info")
-
-    # HTTPS needs a port to proxy to and a Tailscale sidecar to serve from
-    if [[ "$include_https" == "yes" && ( -z "$primary_port" || "$include_ts" != "yes" ) ]]; then
-        include_https="no"
-    fi
+    # Every pod is a Tailscale node; HTTPS via serve is on whenever there is a
+    # port to proxy (parse-service-config derives this from the primary port).
+    include_https=$(jq -r '.include_https // "no"' <<<"$service_info")
 
     # --- Header and container cleanup ---
     cat << EOF
@@ -37,9 +33,8 @@ podman rm -f tailscale-$service 2>/dev/null || true
 
 EOF
 
-    # --- Tailscale sidecar ---
-    if [[ "$include_ts" == "yes" ]]; then
-        cat << EOF
+    # --- Tailscale sidecar (every pod gets one) ---
+    cat << EOF
 # The auth key is read from this file at runtime and is never stored in
 # this script or in saved configurations. It is only needed for the FIRST
 # enrollment: afterwards the pod's identity lives in ./tailscale/ and a
@@ -117,7 +112,6 @@ if ! podman ps --format '{{.Names}}' | grep -q "^tailscale-$service\$"; then
 fi
 
 EOF
-    fi
 
     # --- Main service ---
     cat << EOF
@@ -127,16 +121,9 @@ podman run -d \\
   --name $service \\
 EOF
 
-    # Network configuration: share the Tailscale sidecar's namespace, or
-    # publish ports directly when running without Tailscale.
-    if [[ "$include_ts" == "yes" ]]; then
-        echo "  --network container:tailscale-$service \\"
-    else
-        local port_pair
-        while IFS= read -r port_pair; do
-            echo "  -p $port_pair \\"
-        done < <(jq -r 'to_entries[] | "\(.key):\(.value)"' <<<"$ports_json")
-    fi
+    # Share the Tailscale sidecar's network namespace. The pod publishes no
+    # host ports; it is reachable only over the tailnet via its own identity.
+    echo "  --network container:tailscale-$service \\"
 
     # Environment variables
     while IFS= read -r env_pair; do
@@ -192,11 +179,7 @@ EOF
     fi
 
     # --- Results ---
-    if [[ "$include_ts" == "yes" ]]; then
-        generate_tailscale_results "$service" "$primary_port" "$ports_json" "$include_https"
-    else
-        generate_local_results "$service" "$primary_port" "$ports_json"
-    fi
+    generate_tailscale_results "$service" "$primary_port" "$ports_json" "$include_https"
 }
 
 # Result section for Tailscale-enabled deployments
@@ -278,31 +261,5 @@ if [ "\${SERVICE_READY:-yes}" != "yes" ]; then
   echo "Note: $service is not yet accessible."
   echo "Run './diagnose.sh' if the issue persists."
 fi
-EOF
-}
-
-# Result section for deployments without Tailscale (locally published ports)
-generate_local_results() {
-    local service="$1"
-    local primary_port="$2"
-    local ports_json="$3"
-
-    cat << EOF
-echo ""
-echo "========================================"
-echo "  $service Deployment Complete"
-echo "========================================"
-echo ""
-echo "Access URLs (local network):"
-EOF
-
-    local host_port
-    while IFS= read -r host_port; do
-        echo "echo \"  $service: http://localhost:$host_port\""
-    done < <(jq -r 'keys[]' <<<"$ports_json")
-
-    cat << EOF
-echo ""
-echo "Run './diagnose.sh' if the service is not reachable."
 EOF
 }

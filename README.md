@@ -53,8 +53,10 @@ state directory).
 
 A Tailscale sidecar starts first and joins your tailnet with the
 service's name. The service shares its network namespace via
-`--network container:`. Optionally, `tailscale serve` terminates HTTPS
-on 443 with an automatic `ts.net` certificate.
+`--network container:`. `tailscale serve` terminates HTTPS on 443 with
+an automatic `ts.net` certificate. This is the whole product — there is
+no plain-HTTP or no-Tailscale mode: every pod is a tailnet device with
+HTTPS, so an auth key is required to install one.
 
 - **Per-service tailnet identity** — Tailscale ACLs work at the service
   level. Share Jellyfin with family without exposing the rest.
@@ -80,7 +82,6 @@ Add an entry to `homelab.js`:
 {
   "name": "myservice",
   "image": "someone/myservice:latest",
-  "network_mode": "bridge",
   "restart_policy": "unless-stopped",
   "environment": { "TZ": "America/Los_Angeles" },
   "volumes": { "/path/to/config": "/config" },

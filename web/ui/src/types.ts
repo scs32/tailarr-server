@@ -76,8 +76,6 @@ export interface PodConfig {
   environment: Record<string, string>;
   volumes: Record<string, string>;
   memory_limit: string;
-  tailscale: boolean;
-  https: boolean;
   shares: string[];
   controller: boolean;
 }
@@ -98,8 +96,6 @@ export interface ReconfigureRequest {
   environment: Record<string, string>;
   volumes: Record<string, string>;
   memory_limit: string;
-  tailscale: boolean;
-  https: boolean;
   shares: string[];
   pull: boolean;
 }
@@ -184,7 +180,5 @@ export interface InstallRequest {
   environment?: Record<string, string>;
   volumes?: Record<string, string>;
   shares?: string[];
-  tailscale?: boolean;
-  https?: boolean;
   authkey?: string;
 }
