@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import type { MonitorStatus } from "../types";
 import { api } from "../api";
 import { Alert } from "../components/Alert";
+import { ChipPicker } from "../components/ChipPicker";
 import { FlashView, useFlash } from "../components/Flash";
 import { Field } from "../components/Form";
 import { PodGlyph, PulseIcon, SpinnerIcon } from "../components/Icons";
@@ -271,8 +272,18 @@ export function Monitor() {
                       </>
                     )}
                   </p>
+                  <div style={{ marginTop: "var(--sp-3)", display: "flex", justifyContent: "center" }}>
+                    <ChipPicker
+                      chips={status.pods.filter((p) => p.monitored).map((p) => p.name)}
+                      options={status.pods.map((p) => ({ id: p.name, hint: p.dns_name }))}
+                      onAdd={addMonitor}
+                      onRemove={removeMonitor}
+                      addLabel="+ Add pod"
+                      busyId={busy}
+                    />
+                  </div>
                   <p className="field__hint" style={{ margin: "var(--sp-3) 0 0", textAlign: "center" }}>
-                    Drop a pod here to monitor it
+                    …or drag a pod card here
                   </p>
                 </>
               ) : !status.kuma_pod && !status.configured && !showExternal ? (

@@ -1,7 +1,11 @@
 import { Link } from "react-router-dom";
 import type { Share } from "../types";
 import { FormSection } from "./Form";
+import { ChipPicker } from "./ChipPicker";
 
+// Attach shared folders to a pod. Same picking affordance as Users/Monitor
+// (chips + searchable add), but batched: changes land in the form state and
+// apply on Reload/Update, matching the rest of the edit popup.
 export function SharePicker({
   shares,
   picked,
@@ -11,10 +15,6 @@ export function SharePicker({
   picked: string[];
   onChange: (names: string[]) => void;
 }) {
-  function toggle(name: string, on: boolean) {
-    onChange(on ? [...picked, name] : picked.filter((n) => n !== name));
-  }
-
   return (
     <FormSection title="Shared folders">
       {shares.length === 0 ? (
@@ -22,28 +22,21 @@ export function SharePicker({
           None defined — <Link to="/shares">add shared folders</Link>.
         </p>
       ) : (
-        shares.map((s) => (
-          <label
-            key={s.name}
-            className="toggle"
-            // one share per line (.toggle is inline-flex by default)
-            style={{ display: "flex", marginBottom: "var(--sp-3)", alignItems: "flex-start" }}
-          >
-            <input
-              type="checkbox"
-              checked={picked.includes(s.name)}
-              onChange={(e) => toggle(s.name, e.target.checked)}
-            />
-            <span className="toggle__track" />
-            <span>
-              {s.name}{" "}
-              <span className="field__hint">
-                ({s.host_path}
-                {s.ro ? " :ro" : ""} → {s.container_path})
-              </span>
-            </span>
-          </label>
-        ))
+        <>
+          <ChipPicker
+            chips={picked}
+            options={shares.map((s) => ({
+              id: s.name,
+              hint: `${s.host_path}${s.ro ? " :ro" : ""} → ${s.container_path}`,
+            }))}
+            onAdd={(name) => onChange([...picked, name])}
+            onRemove={(name) => onChange(picked.filter((n) => n !== name))}
+            addLabel="+ Attach share"
+          />
+          <p className="field__hint" style={{ margin: "var(--sp-2) 0 0" }}>
+            Applied when you Reload or Update the pod.
+          </p>
+        </>
       )}
     </FormSection>
   );

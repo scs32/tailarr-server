@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { UsersStatus } from "../types";
 import { api } from "../api";
 import { Alert } from "../components/Alert";
+import { ChipPicker } from "../components/ChipPicker";
 import { FlashView, useFlash } from "../components/Flash";
 
 function ago(iso: string): string {
@@ -188,33 +189,16 @@ export function Users() {
                   </div>
                 </div>
                 <div className="spacer" />
-                <div className="preview-row" style={{ gap: "var(--sp-3)" }}>
-                  {status.services.map((svc) => {
-                    const allowed = u.can.includes(svc);
-                    const busy = busyKey === `${u.id}:${svc}`;
-                    return (
-                      <label
-                        key={svc}
-                        className="field__hint"
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 6,
-                          cursor: busy ? "wait" : "pointer",
-                          opacity: busy ? 0.5 : 1,
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={allowed}
-                          disabled={!!busyKey}
-                          onChange={() => toggle(u.id, svc, !allowed)}
-                        />
-                        {svc}
-                      </label>
-                    );
-                  })}
-                </div>
+                <ChipPicker
+                  chips={u.can}
+                  options={status.services.map((s) => ({ id: s }))}
+                  onAdd={(svc) => toggle(u.id, svc, true)}
+                  onRemove={(svc) => toggle(u.id, svc, false)}
+                  addLabel="+ Add service"
+                  emptyHint="no services deployed"
+                  busyId={busyKey.startsWith(`${u.id}:`) ? busyKey.slice(u.id.length + 1) : ""}
+                  disabled={!!busyKey}
+                />
               </div>
             ))}
           </div>
