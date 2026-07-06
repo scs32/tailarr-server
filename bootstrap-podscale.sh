@@ -122,7 +122,7 @@ podman run -d \
   -e TS_AUTHKEY="$(cat "$KEY_FILE" 2>/dev/null || true)" \
   -e TS_STATE_DIR=/var/lib/tailscale \
   -e TS_USERSPACE=false \
-  -e TS_DEBUG_MTU=1200 \
+  -e TS_DEBUG_MTU=1280 \
   -e TS_HOSTNAME="podscale" \
   "$TS_IMAGE"
 

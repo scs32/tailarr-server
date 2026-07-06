@@ -208,6 +208,18 @@ non-negotiable.
 
 ## 6. Funnel tie-in
 
+**Two hard-won operational facts (verified live 2026-07-06):**
+1. **Funnel ingress traffic is NOT exempt from the packet filter** under
+   default-deny (open bug tailscale/tailscale#18181). The managed grants
+   block therefore always contains
+   `{"src": ["fd7a:115c:a1e0:ab12::/64"], "dst": ["tag:podscale-public"], "ip": ["*"]}`
+   — Tailscale's funnel ingress range → public-tagged pods. Without it the
+   node logs `Drop: ... no rules matched` and public requests reset.
+2. **Funnel needs the node's tailnet IPv6, and IPv6 refuses to run on links
+   with MTU < 1280.** The old sidecar `TS_DEBUG_MTU=1200` silently broke
+   Funnel (public requests hang); sidecars run 1280 as of v0.3.4. Sidecars
+   created before that need one restart to become publicly reachable.
+
 The shipped Make-public button (v0.3.0) flips `AllowFunnel` in the pod's
 serve config, but tailscaled refuses without the **`funnel` nodeAttr** on the
 node. The managed nodeAttrs block targets `tag:podscale-public`; making a pod

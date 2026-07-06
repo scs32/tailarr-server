@@ -755,7 +755,14 @@ FENCE_END = "// <<< podscale-managed:"
 def _managed_sections():
     """Desired fence contents, derived from the deployed service list."""
     svcs = _shareable_services()
-    grants = ['{"src": ["tag:podscale"], "dst": ["tag:podscale"], "ip": ["*"]},']
+    grants = [
+        '{"src": ["tag:podscale"], "dst": ["tag:podscale"], "ip": ["*"]},',
+        # Funnel ingress traffic is NOT exempt from the packet filter under
+        # default-deny (tailscale/tailscale#18181) — admit Tailscale's
+        # ingress range to public-tagged pods or Funnel silently drops.
+        '{"src": ["fd7a:115c:a1e0:ab12::/64"], '
+        '"dst": ["tag:podscale-public"], "ip": ["*"]}, // funnel ingress',
+    ]
     for s in svcs:
         grants.append(f'{{"src": ["tag:podscale-can-{s}"], '
                       f'"dst": ["tag:podscale-svc-{s}"], "ip": ["443"]}},')

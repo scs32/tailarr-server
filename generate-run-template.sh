@@ -83,8 +83,11 @@ EOF
 # (slirp4netns default on rootless/nested hosts) every pod thinks it is
 # 10.0.2.100 and ALL tailnet traffic relays through DERP at ~14 KB/s.
 # TS_USERSPACE=false uses a kernel TUN device (throughput + MTU control).
-# TS_DEBUG_MTU=1200 keeps WireGuard UDP (MTU+80) inside a 1280-byte host
-# link (nested VMs); harmless on 1500-MTU hosts.
+# TS_DEBUG_MTU=1280: IPv6 refuses to run on links below 1280 bytes, and
+# Funnel delivers ingress traffic to the node's tailnet IPv6 — smaller MTUs
+# (the old 1200) silently break public exposure. 1280 is the floor that
+# keeps IPv6 alive; oversized WireGuard UDP on nested 1280-byte host links
+# falls back to DERP/PMTUD per path.
 # The mkdir works around a podman 4.x rootless bug: bridge IPAM opens its db
 # under a staging /run that is torn down with the last bridge container.
 echo "Starting Tailscale..."
@@ -106,7 +109,7 @@ EOF
   -e TS_AUTHKEY="\$(cat "\$TS_AUTHKEY_FILE" 2>/dev/null || true)" \\
   -e TS_STATE_DIR=/var/lib/tailscale \\
   -e TS_USERSPACE=false \\
-  -e TS_DEBUG_MTU=1200 \\
+  -e TS_DEBUG_MTU=1280 \\
   -e TS_HOSTNAME="$service" \\
   $ts_image
 

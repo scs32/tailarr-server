@@ -332,6 +332,8 @@ POLICY = """{
 secs = app._managed_sections()
 check(any("tag:podscale-can-testpod" in ln for ln in secs["grants"]),
       "policy: managed grants include the installed service")
+check(any("fd7a:115c:a1e0:ab12::/64" in ln for ln in secs["grants"]),
+      "policy: funnel ingress grant present (tailscale#18181)")
 check(any("tag:podscale-svc-testpod" in ln for ln in secs["tagowners"]),
       "policy: managed tagOwners include the svc/can pair")
 check(app._sections_prefix_ok(secs), "policy: generated content passes prefix rule")
