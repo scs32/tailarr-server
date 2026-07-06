@@ -1,4 +1,4 @@
-# Podscale
+# Tailarr
 
 Deploy self-hosted services as Podman pods where **every service becomes
 its own device on your Tailscale tailnet** — its own hostname, MagicDNS
@@ -12,11 +12,11 @@ On a Debian/Ubuntu host (a VM or container works great), with a
 [Tailscale auth key](https://login.tailscale.com/admin/settings/keys):
 
 ```sh
-TS_AUTHKEY=tskey-... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/podscale/main/install.sh)"
+TS_AUTHKEY=tskey-... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr/main/install.sh)"
 ```
 
-This installs podman, pulls the Podscale controller image, and enrolls it
-on your tailnet. Then open **`https://podscale.<your-tailnet>.ts.net`**
+This installs podman, pulls the Tailarr controller image, and enrolls it
+on your tailnet. Then open **`https://tailarr.<your-tailnet>.ts.net`**
 and install services from the catalog with a click.
 
 ## Security model — read this
@@ -58,7 +58,7 @@ HTTPS, so an auth key is required to install one.
 
 ## How this compares
 
-| | CasaOS / Umbrel | Podscale |
+| | CasaOS / Umbrel | Tailarr |
 |---|---|---|
 | Interface | Web dashboard on the LAN | Web UI as a tailnet-only pod |
 | Runtime | Docker daemon | Podman (daemonless) |
@@ -85,7 +85,7 @@ Optional fields: `"command"` (appended after the image) and
 
 ## Running on macOS with apple/container
 
-Podscale needs a Linux host, but you don't need a separate machine — run
+Tailarr needs a Linux host, but you don't need a separate machine — run
 it inside a lightweight Linux guest with Apple's
 [`container`](https://github.com/apple/container) tool (macOS 15+, Apple
 silicon). The guest is where podman and the pods live; macOS just hosts it.
@@ -109,7 +109,7 @@ container run -d --name podhost \
   docker.io/library/debian:bookworm sleep infinity
 ```
 
-**3. Install Podscale inside the guest.** Shell in, add `curl`, then run
+**3. Install Tailarr inside the guest.** Shell in, add `curl`, then run
 the normal one-liner with your
 [Tailscale auth key](https://login.tailscale.com/admin/settings/keys):
 
@@ -117,13 +117,13 @@ the normal one-liner with your
 container exec -ti podhost bash
 # now inside the guest:
 apt update && apt install -y curl
-TS_AUTHKEY=tskey-... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/podscale/main/install.sh)"
+TS_AUTHKEY=tskey-... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr/main/install.sh)"
 ```
 
 The bootstrap detects the guest's reduced MTU and pins podman's network
 MTU to match (nested guests run at MTU 1280; larger MTUs silently
 blackhole TLS). When it finishes, open
-**`https://podscale.<your-tailnet>.ts.net`** from any tailnet device.
+**`https://tailarr.<your-tailnet>.ts.net`** from any tailnet device.
 
 **Media into pods.** Everything under the guest's `/data` maps back to
 `$HOME/poddata` on your Mac. Attach it to pods from the web UI's Shares
@@ -149,7 +149,7 @@ login item) so the guest and pods come up without you.
 Debian/Ubuntu hosts with podman (auto-installed). Runs happily inside
 VMs and container-VMs — see **Running on macOS with apple/container**
 above for the fully worked nested-guest path, and
-`bootstrap-podscale.sh` for the MTU and boot-persistence handling that
+`bootstrap-tailarr.sh` for the MTU and boot-persistence handling that
 nested hosts need. Everything else: PRs welcome.
 
 ## Development
@@ -159,7 +159,7 @@ bash tests/smoke.sh   # engine end-to-end (create.sh → generated scripts), pod
 ```
 
 CI runs shellcheck + the smoke test on every push; tags build the
-multi-arch controller image to `ghcr.io/scs32/podscale`.
+multi-arch controller image to `ghcr.io/scs32/tailarr`.
 
 ## License
 

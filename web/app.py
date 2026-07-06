@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Podscale web controller — JSON API backing the React SPA.
+"""Tailarr web controller — JSON API backing the React SPA.
 
 Architecture:
 
@@ -41,7 +41,7 @@ PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
 STATIC_DIR = os.environ.get("STATIC_DIR", os.path.join(APP_DIR, "static"))
 PORT = int(os.environ.get("PORT", "8080"))
 
-CONTROLLER_PODS = {"podscale", "homepod"}  # don't offer stop-self buttons ("homepod" = pre-rename deploys)
+CONTROLLER_PODS = {"tailarr", "podscale", "homepod"}  # older names = pre-rename deploys
 
 # Shared media folders (the only thing allowed to pierce the pod barrier).
 # Each share: {"host_path": "/data", "container_path": "/data", "ro": false}
@@ -144,7 +144,7 @@ def fetch_catalog(url, force=False):
             return cached[1], cached[2]
     services, error = [], None
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "podscale"})
+        req = urllib.request.Request(url, headers={"User-Agent": "tailarr"})
         with urllib.request.urlopen(req, timeout=8) as r:
             raw = r.read(2_000_000)  # cap at ~2 MB
         data = json.loads(raw.decode())
@@ -597,17 +597,17 @@ def op_backup_delete(name, ts):
 # =========================================================================
 # Tailnet user machines (the Users page)
 #
-# A "user" here is a MACHINE wearing tag:podscale-user (enrolled with a
+# A "user" here is a MACHINE wearing tag:tailarr-user (enrolled with a
 # handed-out auth key). It can reach nothing until it also wears a
-# tag:podscale-can-<service> capability badge — flipping badges is one
+# tag:tailarr-can-<service> capability badge — flipping badges is one
 # device-tags API call and never touches the policy file. Nicknames are a
-# Podscale-side registry (.users.json, keyed by stable node ID).
+# Tailarr-side registry (.users.json, keyed by stable node ID).
 # See docs/acl-design.md.
 # =========================================================================
 TSAPI_FILE = os.path.join(PODS_DIR, ".tsapi.json")
 USERS_FILE = os.path.join(PODS_DIR, ".users.json")
-TS_USER_TAG = "tag:podscale-user"
-TS_CAN_PREFIX = "tag:podscale-can-"
+TS_USER_TAG = "tag:tailarr-user"
+TS_CAN_PREFIX = "tag:tailarr-can-"
 
 
 def _ts_token():
@@ -664,7 +664,7 @@ def _shareable_services():
 
 
 def status_users():
-    """User machines (tag:podscale-user) + their capability badges."""
+    """User machines (tag:tailarr-user) + their capability badges."""
     services = _shareable_services()
     if not _ts_token():
         return {"configured": False, "error": None, "users": [],
@@ -709,7 +709,7 @@ def op_user_access(node_id, service, allow):
     """Grant/revoke a service to a user machine: flip its can-<svc> badge.
 
     Tag membership only — the policy file is never touched here. The
-    device must already wear tag:podscale-user (we manage user machines,
+    device must already wear tag:tailarr-user (we manage user machines,
     nothing else), and the can- tag must exist in the tailnet policy's
     tagOwners (it does for every installed service once the fenced
     generator has run; errors from Tailscale are surfaced verbatim).
@@ -722,7 +722,7 @@ def op_user_access(node_id, service, allow):
     tags = dev.get("tags") or []
     if TS_USER_TAG not in tags:
         return {"ok": False, "id": node_id,
-                "error": "Not a podscale user machine."}
+                "error": "Not a tailarr user machine."}
     badge = TS_CAN_PREFIX + service
     new_tags = [t for t in tags if t != badge]
     if allow:
@@ -739,49 +739,49 @@ def op_user_access(node_id, service, allow):
 # =========================================================================
 # Tailnet policy sync — the fenced-grant generator (docs/acl-design.md §4)
 #
-# Podscale owns three labeled fenced regions of the tailnet policy file
+# Tailarr owns three labeled fenced regions of the tailnet policy file
 # (grants / tagOwners / nodeAttrs) and regenerates them from the deployed
 # service list on install/remove. Line-level splicing only: the human's
 # HuJSON outside the fences survives byte-for-byte. Fail closed on any
 # fence anomaly; nothing inside a fence may reference a name outside
-# tag:podscale* (the prefix invariant).
+# tag:tailarr* (the prefix invariant).
 # =========================================================================
 _policy_lock = threading.Lock()
 ACL_BACKUP_FILE = os.path.join(PODS_DIR, ".acl-last-good.hujson")
-FENCE_BEGIN = "// >>> podscale-managed:"
-FENCE_END = "// <<< podscale-managed:"
+FENCE_BEGIN = "// >>> tailarr-managed:"
+FENCE_END = "// <<< tailarr-managed:"
 
 
 def _managed_sections():
     """Desired fence contents, derived from the deployed service list."""
     svcs = _shareable_services()
     grants = [
-        '{"src": ["tag:podscale"], "dst": ["tag:podscale"], "ip": ["*"]},',
+        '{"src": ["tag:tailarr"], "dst": ["tag:tailarr"], "ip": ["*"]},',
         # Funnel ingress traffic is NOT exempt from the packet filter under
         # default-deny (tailscale/tailscale#18181) — admit Tailscale's
         # ingress range to public-tagged pods or Funnel silently drops.
         '{"src": ["fd7a:115c:a1e0:ab12::/64"], '
-        '"dst": ["tag:podscale-public"], "ip": ["*"]}, // funnel ingress',
+        '"dst": ["tag:tailarr-public"], "ip": ["*"]}, // funnel ingress',
     ]
     for s in svcs:
-        grants.append(f'{{"src": ["tag:podscale-can-{s}"], '
-                      f'"dst": ["tag:podscale-svc-{s}"], "ip": ["443"]}},')
+        grants.append(f'{{"src": ["tag:tailarr-can-{s}"], '
+                      f'"dst": ["tag:tailarr-svc-{s}"], "ip": ["443"]}},')
     owners = [f'"{t}": ["autogroup:admin"],'
-              for t in ("tag:podscale", "tag:podscale-ctrl",
-                        "tag:podscale-user", "tag:podscale-public")]
+              for t in ("tag:tailarr", "tag:tailarr-ctrl",
+                        "tag:tailarr-user", "tag:tailarr-public")]
     for s in svcs:
-        owners.append(f'"tag:podscale-svc-{s}": ["autogroup:admin"],')
-        owners.append(f'"tag:podscale-can-{s}": ["autogroup:admin"],')
-    attrs = ['{"target": ["tag:podscale-public"], "attr": ["funnel"]},']
+        owners.append(f'"tag:tailarr-svc-{s}": ["autogroup:admin"],')
+        owners.append(f'"tag:tailarr-can-{s}": ["autogroup:admin"],')
+    attrs = ['{"target": ["tag:tailarr-public"], "attr": ["funnel"]},']
     return {"grants": grants, "tagowners": owners, "nodeattrs": attrs}
 
 
 def _sections_prefix_ok(sections):
-    """The safety invariant: fences may only reference tag:podscale* names."""
+    """The safety invariant: fences may only reference tag:tailarr* names."""
     for lines in sections.values():
         for ln in lines:
             for t in re.findall(r'"(tag:[a-z0-9-]+)"', ln):
-                if not t.startswith("tag:podscale"):
+                if not t.startswith("tag:tailarr"):
                     return False
     return True
 
@@ -854,7 +854,7 @@ def _ts_acl(method, path_suffix="", body_text=None, etag=None):
 
 
 def ts_policy_sync():
-    """Regenerate the podscale-managed regions of the tailnet policy.
+    """Regenerate the tailarr-managed regions of the tailnet policy.
     Returns {ok, changed, error}."""
     sections = _managed_sections()
     if not _sections_prefix_ok(sections):
@@ -904,20 +904,20 @@ def _ts_find_device(hostname):
 def ts_tag_sidecar(name):
     """Best-effort: ensure a pod's sidecar wears its identity tags. Runs in
     the background after a successful start (the sidecar enrolls then).
-    Idempotent; preserves tag:podscale-public; silent on failure — the next
+    Idempotent; preserves tag:tailarr-public; silent on failure — the next
     start retries."""
     if not _ts_token():
         return
-    want = {"tag:podscale",
-            "tag:podscale-ctrl" if name in CONTROLLER_PODS
-            else f"tag:podscale-svc-{name}"}
+    want = {"tag:tailarr",
+            "tag:tailarr-ctrl" if name in CONTROLLER_PODS
+            else f"tag:tailarr-svc-{name}"}
     for _ in range(5):
         d = _ts_find_device(name)
         if d:
             tags = set(d.get("tags") or [])
             if want <= tags:
                 return
-            keep = {t for t in tags if t == "tag:podscale-public"}
+            keep = {t for t in tags if t == "tag:tailarr-public"}
             ts_api("POST", f"/device/{d['nodeId']}/tags",
                    {"tags": sorted(want | keep)})
             return
@@ -925,7 +925,7 @@ def ts_tag_sidecar(name):
 
 
 def ts_set_public(name, public):
-    """Add/remove tag:podscale-public on a pod's sidecar so the funnel
+    """Add/remove tag:tailarr-public on a pod's sidecar so the funnel
     nodeAttr applies. Returns an error string or None."""
     if not _ts_token():
         return ("no Tailscale API token on the controller — the funnel "
@@ -935,8 +935,8 @@ def ts_set_public(name, public):
     if not d:
         return f"sidecar '{name}' not found in the tailnet"
     tags = set(d.get("tags") or [])
-    new = (tags | {"tag:podscale-public"}) if public \
-        else (tags - {"tag:podscale-public"})
+    new = (tags | {"tag:tailarr-public"}) if public \
+        else (tags - {"tag:tailarr-public"})
     if new == tags:
         return None
     code, resp = ts_api("POST", f"/device/{d['nodeId']}/tags",
@@ -947,7 +947,7 @@ def ts_set_public(name, public):
 
 
 def op_user_key():
-    """Mint a single-use, preauthorized tag:podscale-user auth key (24h TTL).
+    """Mint a single-use, preauthorized tag:tailarr-user auth key (24h TTL).
     Devices enrolling with it appear on the Users page with zero access."""
     if not _ts_token():
         return {"ok": False, "error": "no API token configured", "key": ""}
@@ -956,7 +956,7 @@ def op_user_key():
             "reusable": False, "ephemeral": False, "preauthorized": True,
             "tags": [TS_USER_TAG]}}},
         "expirySeconds": 86400,
-        "description": "podscale user enrollment",
+        "description": "tailarr user enrollment",
     })
     if code != 200:
         return {"ok": False, "error": f"keys API: {resp}", "key": ""}
@@ -1543,7 +1543,7 @@ def op_network_set(name, data):
             json.dump(_serve_config(info["primary_port"], funnel), f, indent=2)
 
         # 3. Funnel needs the `funnel` nodeAttr, which the managed policy
-        #    grants via tag:podscale-public — flip that tag on the sidecar.
+        #    grants via tag:tailarr-public — flip that tag on the sidecar.
         attr_err = ts_set_public(name, funnel)
         if attr_err:
             output += f"\n[funnel nodeAttr] {attr_err}"
@@ -2025,7 +2025,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.serve_static(url.path):
             return
         self._send(
-            b"Podscale controller: web UI build not found (rebuild the image "
+            b"Tailarr controller: web UI build not found (rebuild the image "
             b"or point STATIC_DIR at an SPA build). The JSON API is at /api/.",
             404, "text/plain; charset=utf-8",
         )
@@ -2055,6 +2055,6 @@ if __name__ == "__main__":
     # grace period before SIGKILL. Exit promptly instead — in-flight pod
     # actions are subprocesses of the stop already in progress anyway.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    print(f"Podscale web UI on :{PORT} (pods dir: {PODS_DIR})")
+    print(f"Tailarr web UI on :{PORT} (pods dir: {PODS_DIR})")
     maybe_check_updates()  # kick a first check if the cache is stale
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()

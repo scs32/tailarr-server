@@ -1,5 +1,5 @@
 #!/bin/sh
-# Smoke test for the Podscale engine.
+# Smoke test for the Tailarr engine.
 #
 # Drives create.sh directly with config JSON on stdin (exactly how the web
 # controller renders pods), asserts on the generated scripts, and executes

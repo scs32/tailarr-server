@@ -1,10 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "[INFO] Installing and launching Podscale..."
+echo "[INFO] Installing and launching Tailarr..."
 
 WORKDIR="$(pwd)"
-REPO_BASE_URL="https://raw.githubusercontent.com/scs32/podscale/main"
+REPO_BASE_URL="https://raw.githubusercontent.com/scs32/tailarr/main"
 
 # Package installs need sudo only when not already root (containers and
 # minimal VM guests often have no sudo binary at all).
@@ -64,7 +64,7 @@ FILES=(
     "display-summary.sh"
 
     # Controller bootstrap (the web UI is the product)
-    "bootstrap-podscale.sh"
+    "bootstrap-tailarr.sh"
 )
 
 echo "[FETCH] Downloading core files into: $WORKDIR"
@@ -86,5 +86,5 @@ if [[ -z "${TS_AUTHKEY:-}" ]]; then
     exit 1
 fi
 
-echo "[START] Bootstrapping the Podscale controller..."
-TS_AUTHKEY="$TS_AUTHKEY" ./bootstrap-podscale.sh
+echo "[START] Bootstrapping the Tailarr controller..."
+TS_AUTHKEY="$TS_AUTHKEY" ./bootstrap-tailarr.sh

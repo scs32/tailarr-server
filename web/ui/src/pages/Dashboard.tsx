@@ -180,7 +180,7 @@ export function Dashboard() {
           {confirmFleet === "stop" ? (
             <>
               Every pod and its Tailscale sidecar gets a graceful stop. The
-              podscale controller stays running so you can start everything
+              Tailarr controller stays running so you can start everything
               again from here — shutting down the host or VM itself happens
               outside this UI, after the pods are down.
             </>

@@ -8,6 +8,7 @@ import {
   PulseIcon,
   UsersIcon,
   GearIcon,
+  TailarrMark,
 } from "./Icons";
 
 const NAV = [
@@ -24,9 +25,9 @@ export function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="brand">
-        <div className="brand__mark" />
+        <TailarrMark className="brand__mark" />
         <div className="brand__name">
-          Pod<span>scale</span>
+          Tail<span>arr</span>
         </div>
       </div>
       {NAV.map(({ to, label, icon: Icon, end }) => (

@@ -91,6 +91,30 @@ export const CheckIcon = (p: SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
+// The Tailarr mark: a 3×3 tailnet mesh with a rising tail of four growing
+// nodes (brand guide §01). Color comes from the parent (Signal Cyan).
+export const TailarrMark = (p: SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 120 120" style={{ overflow: "visible" }} {...p}>
+    <g fill="currentColor" opacity="0.16">
+      <circle cx="30" cy="30" r="3.2" /><circle cx="60" cy="30" r="3.2" /><circle cx="90" cy="30" r="3.2" />
+      <circle cx="30" cy="60" r="3.2" /><circle cx="60" cy="60" r="3.2" /><circle cx="90" cy="60" r="3.2" />
+      <circle cx="30" cy="90" r="3.2" /><circle cx="60" cy="90" r="3.2" /><circle cx="90" cy="90" r="3.2" />
+    </g>
+    <polyline
+      points="26,96 49,73 73,52 98,28"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <g fill="currentColor">
+      <circle cx="26" cy="96" r="5" /><circle cx="49" cy="73" r="6.5" />
+      <circle cx="73" cy="52" r="8.5" /><circle cx="98" cy="28" r="11" />
+    </g>
+  </svg>
+);
+
 export const UsersIcon = (p: SVGProps<SVGSVGElement>) => (
   <svg {...base(p)}>
     <circle cx="9" cy="8" r="4" />

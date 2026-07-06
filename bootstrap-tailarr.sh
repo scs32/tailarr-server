@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# Bootstrap the Podscale controller: a Tailscale sidecar plus the controller
+# Bootstrap the Tailarr controller: a Tailscale sidecar plus the controller
 # web UI sharing its network namespace - deployed exactly like any other pod.
 #
 # Usage:
-#   TS_AUTHKEY=tskey-... ./bootstrap-podscale.sh          (preferred: env var)
-#   ./bootstrap-podscale.sh tskey-...                     (or as an argument)
-#   ./bootstrap-podscale.sh                               (reuse existing state/key)
+#   TS_AUTHKEY=tskey-... ./bootstrap-tailarr.sh          (preferred: env var)
+#   ./bootstrap-tailarr.sh tskey-...                     (or as an argument)
+#   ./bootstrap-tailarr.sh                               (reuse existing state/key)
 #
-# The web UI is then at http://podscale.<your-tailnet>.ts.net:8080
+# The web UI is then at http://tailarr.<your-tailnet>.ts.net:8080
 set -euo pipefail
 
 PODS_DIR="${PODS_DIR:-$HOME/Pods}"
-IMAGE="${HOMEPOD_IMAGE:-ghcr.io/scs32/podscale:latest}"
+IMAGE="${HOMEPOD_IMAGE:-ghcr.io/scs32/tailarr:latest}"
 TS_IMAGE="docker.io/tailscale/tailscale:stable"
 SOCKET="/run/podman/podman.sock"
-KEY_FILE="$PODS_DIR/podscale/.tailscale_authkey"
+KEY_FILE="$PODS_DIR/tailarr/.tailscale_authkey"
 
 command -v podman >/dev/null || { echo "Error: podman is required" >&2; exit 1; }
 
@@ -24,7 +24,7 @@ if [[ -n "$key" ]]; then
     mkdir -p "$(dirname "$KEY_FILE")"
     printf '%s\n' "$key" > "$KEY_FILE"
     chmod 600 "$KEY_FILE"
-elif [[ ! -f "$KEY_FILE" && ! -f "$PODS_DIR/podscale/tailscale/tailscaled.state" ]]; then
+elif [[ ! -f "$KEY_FILE" && ! -f "$PODS_DIR/tailarr/tailscale/tailscaled.state" ]]; then
     echo "Error: no auth key given and no existing state." >&2
     echo "Usage: TS_AUTHKEY=tskey-... $0" >&2
     exit 1
@@ -56,7 +56,7 @@ fi
 # starts this host at boot (LaunchAgent, cron @reboot, etc.).
 cat > /root/start-pods.sh << 'STARTEOF'
 #!/bin/sh
-# Bring up the pod fleet after guest boot (see bootstrap-podscale.sh).
+# Bring up the pod fleet after guest boot (see bootstrap-tailarr.sh).
 if [ ! -f /dev/shm/pods-booted ]; then
   rm -rf /run/containers /run/user/0/netns /run/libpod 2>/dev/null || true
   touch /dev/shm/pods-booted
@@ -87,12 +87,12 @@ podman ps --format "{{.Names}}"
 STARTEOF
 chmod +x /root/start-pods.sh
 
-mkdir -p "$PODS_DIR/podscale/tailscale"
+mkdir -p "$PODS_DIR/tailarr/tailscale"
 
 # HTTPS via tailscale serve: TLS on 443 with an automatic ts.net cert,
 # proxying to the web UI. Requires "HTTPS Certificates" enabled once in
 # the Tailscale admin console (DNS tab).
-cat > "$PODS_DIR/podscale/tailscale-serve.json" << 'SERVEEOF'
+cat > "$PODS_DIR/tailarr/tailscale-serve.json" << 'SERVEEOF'
 {
   "TCP": {"443": {"HTTPS": true}},
   "Web": {
@@ -103,42 +103,42 @@ cat > "$PODS_DIR/podscale/tailscale-serve.json" << 'SERVEEOF'
 }
 SERVEEOF
 
-echo "Removing existing podscale containers..."
-podman rm -f podscale 2>/dev/null || true
-podman rm -f tailscale-podscale 2>/dev/null || true
+echo "Removing existing tailarr containers..."
+podman rm -f tailarr 2>/dev/null || true
+podman rm -f tailscale-tailarr 2>/dev/null || true
 
 echo "Starting Tailscale sidecar..."
 # --network podman + kernel TUN + MTU 1200: direct (non-DERP) tailnet paths
 # on rootless/nested hosts; see the sidecar notes in generate-run-template.sh.
 mkdir -p /run/libpod/rootless-netns/run/containers/storage/networks 2>/dev/null || true
 podman run -d \
-  --name tailscale-podscale \
+  --name tailscale-tailarr \
   --network podman \
   --cap-add NET_ADMIN --cap-add NET_RAW \
   --device /dev/net/tun \
-  -v "$PODS_DIR/podscale/tailscale:/var/lib/tailscale" \
-  -v "$PODS_DIR/podscale/tailscale-serve.json:/config/serve.json" \
+  -v "$PODS_DIR/tailarr/tailscale:/var/lib/tailscale" \
+  -v "$PODS_DIR/tailarr/tailscale-serve.json:/config/serve.json" \
   -e TS_SERVE_CONFIG=/config/serve.json \
   -e TS_AUTHKEY="$(cat "$KEY_FILE" 2>/dev/null || true)" \
   -e TS_STATE_DIR=/var/lib/tailscale \
   -e TS_USERSPACE=false \
   -e TS_DEBUG_MTU=1280 \
-  -e TS_HOSTNAME="podscale" \
+  -e TS_HOSTNAME="tailarr" \
   "$TS_IMAGE"
 
 sleep "${WAIT:-10}"
-if ! podman ps --format '{{.Names}}' | grep -q '^tailscale-podscale$'; then
+if ! podman ps --format '{{.Names}}' | grep -q '^tailscale-tailarr$'; then
     echo "Error: Tailscale sidecar failed to start. Recent logs:" >&2
-    podman logs --tail 20 tailscale-podscale >&2 || true
+    podman logs --tail 20 tailscale-tailarr >&2 || true
     exit 1
 fi
 
-echo "Starting Podscale controller..."
+echo "Starting Tailarr controller..."
 # /run/libpod is mounted so run.sh's IPAM-staging mkdir (see the sidecar
 # notes above) lands on the HOST when the controller drives pod starts.
 podman run -d \
-  --name podscale \
-  --network container:tailscale-podscale \
+  --name tailarr \
+  --network container:tailscale-tailarr \
   -v "$PODS_DIR:$PODS_DIR" \
   -v "$SOCKET:$SOCKET" \
   -v /run/libpod:/run/libpod \
@@ -148,8 +148,8 @@ podman run -d \
   "$IMAGE"
 
 sleep 3
-FQDN=$(podman exec tailscale-podscale tailscale status --json --peers=false 2>/dev/null \
+FQDN=$(podman exec tailscale-tailarr tailscale status --json --peers=false 2>/dev/null \
     | grep -o '"DNSName": *"[^"]*"' | head -1 | cut -d'"' -f4 || true)
 echo ""
-echo "Podscale controller is up."
+echo "Tailarr controller is up."
 echo "  Web UI: https://${FQDN%.}  (or http://${FQDN%.}:8080)"

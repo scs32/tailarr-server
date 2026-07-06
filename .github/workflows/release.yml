@@ -25,5 +25,5 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/scs32/podscale:latest
-            ghcr.io/scs32/podscale:${{ github.ref_name }}
+            ghcr.io/scs32/tailarr:latest
+            ghcr.io/scs32/tailarr:${{ github.ref_name }}

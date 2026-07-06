@@ -144,7 +144,7 @@ export interface BackupEntry {
   reason: string;
 }
 
-// GET /api/users — machines wearing tag:podscale-user + their badges.
+// GET /api/users — machines wearing tag:tailarr-user + their badges.
 export interface UserMachine {
   id: string; // stable Tailscale node ID
   hostname: string;

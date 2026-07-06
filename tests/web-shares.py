@@ -314,27 +314,27 @@ POLICY = """{
     // human comment stays
     "grants": [
         {"src": ["tag:x"], "dst": ["*"], "ip": ["*"]},   // human grant
-        // >>> podscale-managed:grants
+        // >>> tailarr-managed:grants
         {"src": ["old"], "dst": ["old"], "ip": ["*"]},
-        // <<< podscale-managed:grants
+        // <<< tailarr-managed:grants
     ],
     "tagOwners": {
         "tag:x": ["autogroup:admin"],
-        // >>> podscale-managed:tagowners
-        // <<< podscale-managed:tagowners
+        // >>> tailarr-managed:tagowners
+        // <<< tailarr-managed:tagowners
     },
     "nodeAttrs": [
-        // >>> podscale-managed:nodeattrs
-        // <<< podscale-managed:nodeattrs
+        // >>> tailarr-managed:nodeattrs
+        // <<< tailarr-managed:nodeattrs
     ],
 }
 """
 secs = app._managed_sections()
-check(any("tag:podscale-can-testpod" in ln for ln in secs["grants"]),
+check(any("tag:tailarr-can-testpod" in ln for ln in secs["grants"]),
       "policy: managed grants include the installed service")
 check(any("fd7a:115c:a1e0:ab12::/64" in ln for ln in secs["grants"]),
       "policy: funnel ingress grant present (tailscale#18181)")
-check(any("tag:podscale-svc-testpod" in ln for ln in secs["tagowners"]),
+check(any("tag:tailarr-svc-testpod" in ln for ln in secs["tagowners"]),
       "policy: managed tagOwners include the svc/can pair")
 check(app._sections_prefix_ok(secs), "policy: generated content passes prefix rule")
 check(not app._sections_prefix_ok({"g": ['"tag:evil"']}),
@@ -343,12 +343,12 @@ spliced = app._splice_fences(POLICY, secs)
 check("// human comment stays" in spliced and '"tag:x": ["autogroup:admin"]' in spliced,
       "policy: human lines and comments survive splicing")
 check('{"src": ["old"]' not in spliced, "policy: old managed content replaced")
-check('"dst": ["tag:podscale-svc-testpod"], "ip": ["443"]' in spliced,
+check('"dst": ["tag:tailarr-svc-testpod"], "ip": ["443"]' in spliced,
       "policy: new grant line spliced in")
-check('{"target": ["tag:podscale-public"], "attr": ["funnel"]},' in spliced,
+check('{"target": ["tag:tailarr-public"], "attr": ["funnel"]},' in spliced,
       "policy: funnel nodeAttr in managed block")
 try:
-    app._splice_fences(POLICY.replace("// <<< podscale-managed:grants\n", ""), secs)
+    app._splice_fences(POLICY.replace("// <<< tailarr-managed:grants\n", ""), secs)
     check(False, "policy: missing end marker fails closed")
 except ValueError:
     check(True, "policy: missing end marker fails closed")

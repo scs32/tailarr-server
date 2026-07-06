@@ -14,9 +14,9 @@ function ago(iso: string): string {
   return `${Math.floor(mins / 1440)}d ago`;
 }
 
-// User machines: devices enrolled with a podscale-user auth key. Each machine
+// User machines: devices enrolled with a tailarr-user auth key. Each machine
 // can reach exactly the services it holds a capability badge for — checkboxes
-// here flip tag:podscale-can-<svc> on the device via the Tailscale API. No
+// here flip tag:tailarr-can-<svc> on the device via the Tailscale API. No
 // policy-file changes, effective in seconds. See docs/acl-design.md.
 export function Users() {
   const [status, setStatus] = useState<UsersStatus | null>(null);
@@ -82,7 +82,7 @@ export function Users() {
     <>
       <h1 className="page-title">Users</h1>
       <p style={{ color: "var(--muted)", margin: 0 }}>
-        Machines enrolled with a Podscale user key. A machine reaches only the
+        Machines enrolled with a Tailarr user key. A machine reaches only the
         services checked here — changes apply in seconds, no restarts.
       </p>
 
