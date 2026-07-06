@@ -1528,7 +1528,9 @@ def op_network_set(name, data):
                     "status": "render failed", "error": "create.sh failed",
                     "output": output}
 
-        # 2. Live apply: rewrite the mounted serve config in place.
+        # 2. Persist for the NEXT sidecar start: rewrite the mounted serve
+        #    config in place (containerboot applies it at start only — its
+        #    file watcher doesn't see cross-namespace writes, verified live).
         serve_path = os.path.join(PODS_DIR, name, "tailscale-serve.json")
         with open(serve_path, "w") as f:
             json.dump(_serve_config(info["primary_port"], funnel), f, indent=2)
@@ -1539,11 +1541,31 @@ def op_network_set(name, data):
         if attr_err:
             output += f"\n[funnel nodeAttr] {attr_err}"
 
-        # 4. Best-effort readback so ACL refusals are visible: give the
-        #    watcher a moment, then show the sidecar's own view of serve.
+        # 4. Live apply via the CLI in the running sidecar (no restart).
+        #    ACL refusals (missing nodeAttr) surface right here.
+        port = info["primary_port"]
         if ps_all().get(f"tailscale-{name}", ("", 0))[0] == "running":
-            time.sleep(2)
-            r = podman("exec", f"tailscale-{name}", "tailscale", "serve",
+            if attr_err is None and funnel:
+                time.sleep(2)  # let the nodeAttr land before asking for funnel
+            if funnel:
+                r = podman("exec", f"tailscale-{name}", "tailscale",
+                           "funnel", "--bg", str(port), timeout=30)
+                output += r.stdout + r.stderr
+                if r.returncode != 0:
+                    return {"ok": False, "name": name, "action": "funnel",
+                            "status": "funnel refused",
+                            "error": "tailscale refused funnel (see output; "
+                                     "is the funnel nodeAttr granted?)",
+                            "output": output}
+            else:
+                r = podman("exec", f"tailscale-{name}", "tailscale",
+                           "funnel", "--https=443", "off", timeout=30)
+                output += r.stdout + r.stderr
+                # restore tailnet-only serve for 443
+                r = podman("exec", f"tailscale-{name}", "tailscale",
+                           "serve", "--bg", str(port), timeout=30)
+                output += r.stdout + r.stderr
+            r = podman("exec", f"tailscale-{name}", "tailscale", "funnel",
                        "status", timeout=15)
             output += r.stdout + r.stderr
         else:
