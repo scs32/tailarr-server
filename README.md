@@ -12,7 +12,7 @@ On a Debian/Ubuntu host (a VM or container works great), with a
 [Tailscale auth key](https://login.tailscale.com/admin/settings/keys):
 
 ```sh
-TS_AUTHKEY=tskey-... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr/main/install.sh)"
+TS_AUTHKEY=tskey-... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr-server/main/install.sh)"
 ```
 
 This installs podman, pulls the Tailarr controller image, and enrolls it
@@ -117,7 +117,7 @@ the normal one-liner with your
 container exec -ti podhost bash
 # now inside the guest:
 apt update && apt install -y curl
-TS_AUTHKEY=tskey-... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr/main/install.sh)"
+TS_AUTHKEY=tskey-... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr-server/main/install.sh)"
 ```
 
 The bootstrap detects the guest's reduced MTU and pins podman's network

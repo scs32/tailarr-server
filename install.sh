@@ -4,7 +4,7 @@ set -euo pipefail
 echo "[INFO] Installing and launching Tailarr..."
 
 WORKDIR="$(pwd)"
-REPO_BASE_URL="https://raw.githubusercontent.com/scs32/tailarr/main"
+REPO_BASE_URL="https://raw.githubusercontent.com/scs32/tailarr-server/main"
 
 # Package installs need sudo only when not already root (containers and
 # minimal VM guests often have no sudo binary at all).
