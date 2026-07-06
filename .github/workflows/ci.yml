@@ -13,7 +13,7 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck jq
       - name: Lint
         run: shellcheck --severity=error ./*.sh tests/smoke.sh
-      - name: Smoke test (end-to-end wizard with stubbed podman)
+      - name: Smoke test (engine end-to-end with stubbed podman)
         run: bash tests/smoke.sh
       - name: Web shares test (registry + attach flow against create.sh)
         run: python3 tests/web-shares.py
