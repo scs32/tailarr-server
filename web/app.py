@@ -610,12 +610,50 @@ TS_USER_TAG = "tag:tailarr-user"
 TS_CAN_PREFIX = "tag:tailarr-can-"
 
 
+_oauth_lock = threading.Lock()
+_oauth_cache = {"token": "", "exp": 0.0}
+
+
 def _ts_token():
+    """The Tailscale API credential.
+
+    .tsapi.json holds either a static {"token": "tskey-api-..."} (simple,
+    expires in 90 days, full access) or an OAuth client
+    {"oauth_client_id": "...", "oauth_client_secret": "..."} — preferred:
+    scope it to devices/auth_keys/policy_file writes only, tag it
+    tag:tailarr-ctrl (the managed tagOwners name that tag as co-owner of
+    every tailarr tag, so the client may assign them). Access tokens are
+    exchanged on demand and cached until near expiry.
+    """
     try:
         with open(TSAPI_FILE) as f:
-            return (json.load(f).get("token") or "").strip()
+            cfg = json.load(f)
     except (OSError, ValueError):
         return ""
+    static = (cfg.get("token") or "").strip()
+    if static:
+        return static
+    cid = (cfg.get("oauth_client_id") or "").strip()
+    secret = (cfg.get("oauth_client_secret") or "").strip()
+    if not (cid and secret):
+        return ""
+    now = time.time()
+    with _oauth_lock:
+        if _oauth_cache["exp"] - 60 > now:
+            return _oauth_cache["token"]
+        req = urllib.request.Request(
+            "https://api.tailscale.com/api/v2/oauth/token",
+            data=urllib.parse.urlencode(
+                {"client_id": cid, "client_secret": secret}).encode(),
+            method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                data = json.loads(r.read().decode())
+        except (urllib.error.URLError, TimeoutError, ValueError):
+            return ""
+        _oauth_cache["token"] = data.get("access_token", "")
+        _oauth_cache["exp"] = now + float(data.get("expires_in", 3600))
+        return _oauth_cache["token"]
 
 
 def ts_api(method, path, body=None):
@@ -766,12 +804,16 @@ def _managed_sections():
     for s in svcs:
         grants.append(f'{{"src": ["tag:tailarr-can-{s}"], '
                       f'"dst": ["tag:tailarr-svc-{s}"], "ip": ["443"]}},')
-    owners = [f'"{t}": ["autogroup:admin"],'
-              for t in ("tag:tailarr", "tag:tailarr-ctrl",
-                        "tag:tailarr-user", "tag:tailarr-public")]
+    # tag:tailarr-ctrl co-owns every other tag so an OAuth client tagged
+    # tag:tailarr-ctrl may assign them (device tagging + key minting).
+    OWN = '["autogroup:admin", "tag:tailarr-ctrl"]'
+    owners = ['"tag:tailarr-ctrl": ["autogroup:admin"],']
+    owners += [f'"{t}": {OWN},'
+               for t in ("tag:tailarr", "tag:tailarr-user",
+                         "tag:tailarr-public")]
     for s in svcs:
-        owners.append(f'"tag:tailarr-svc-{s}": ["autogroup:admin"],')
-        owners.append(f'"tag:tailarr-can-{s}": ["autogroup:admin"],')
+        owners.append(f'"tag:tailarr-svc-{s}": {OWN},')
+        owners.append(f'"tag:tailarr-can-{s}": {OWN},')
     attrs = ['{"target": ["tag:tailarr-public"], "attr": ["funnel"]},']
     return {"grants": grants, "tagowners": owners, "nodeattrs": attrs}
 

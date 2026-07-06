@@ -93,9 +93,13 @@ export function Users() {
       ) : !status.configured ? (
         <div style={{ marginTop: "var(--sp-5)" }}>
           <Alert kind="info">
-            No Tailscale API token on the controller. Create one in the
-            Tailscale admin console (Settings → Keys) and store it as{" "}
-            <code>{'{"token": "..."}'}</code> in <code>Pods/.tsapi.json</code>.
+            No Tailscale API credential on the controller. Preferred: create
+            an OAuth client (admin console → Settings → OAuth clients) scoped
+            to devices/auth keys/policy file, tagged{" "}
+            <code>tag:tailarr-ctrl</code>, and store{" "}
+            <code>{'{"oauth_client_id": "...", "oauth_client_secret": "..."}'}</code>{" "}
+            in <code>Pods/.tsapi.json</code>. A static{" "}
+            <code>{'{"token": "..."}'}</code> API key also works.
           </Alert>
         </div>
       ) : status.error ? (
