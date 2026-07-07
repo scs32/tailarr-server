@@ -24,6 +24,9 @@ export function Users() {
   const [nickEdit, setNickEdit] = useState<{ id: string; value: string } | null>(null);
   const [minting, setMinting] = useState(false);
   const [mintedKey, setMintedKey] = useState("");
+  const [adoptOpen, setAdoptOpen] = useState(false);
+  const [adoptId, setAdoptId] = useState("");
+  const [adopting, setAdopting] = useState(false);
   const { flash, show, clear } = useFlash();
 
   async function mintKey() {
@@ -37,6 +40,30 @@ export function Users() {
       show({ kind: "err", text: String(e) });
     } finally {
       setMinting(false);
+    }
+  }
+
+  async function adopt() {
+    const id = adoptId.trim();
+    if (!id || adopting) return;
+    setAdopting(true);
+    try {
+      const r = await api.userAdopt(id);
+      if (r.ok) {
+        show({
+          kind: "ok",
+          text: `${r.hostname || id} is now a user machine — grant it services below.`,
+        });
+        setAdoptOpen(false);
+        setAdoptId("");
+        await refresh();
+      } else {
+        show({ kind: "err", text: r.error ?? "Couldn't adopt the machine." });
+      }
+    } catch (e) {
+      show({ kind: "err", text: String(e) });
+    } finally {
+      setAdopting(false);
     }
   }
 
@@ -117,15 +144,65 @@ export function Users() {
             }}
           >
             <div className="section-title">Machines</div>
-            <button
-              className={"btn btn--primary btn--sm" + (minting ? " btn--loading" : "")}
-              disabled={minting}
-              title="Mint a single-use enrollment key for a new user machine"
-              onClick={mintKey}
-            >
-              + Add user
-            </button>
+            <div style={{ display: "flex", gap: "var(--sp-2)" }}>
+              <button
+                className="btn btn--ghost btn--sm"
+                title="Tag an already-enrolled tailnet device as a user machine"
+                onClick={() => setAdoptOpen((v) => !v)}
+              >
+                Adopt by ID
+              </button>
+              <button
+                className={"btn btn--primary btn--sm" + (minting ? " btn--loading" : "")}
+                disabled={minting}
+                title="Mint a single-use enrollment key for a new user machine"
+                onClick={mintKey}
+              >
+                + Add user
+              </button>
+            </div>
           </div>
+
+          {adoptOpen && (
+            <div className="card" style={{ padding: "var(--sp-4)", marginTop: "var(--sp-3)" }}>
+              <div className="row__title">Adopt an existing machine</div>
+              <p className="field__hint" style={{ margin: "var(--sp-2) 0" }}>
+                For devices already on the tailnet (e.g. an Apple TV that
+                signed in with an Apple ID). Paste its node ID from the
+                Tailscale admin console (machine page URL, or “Copy node ID”).
+                Tagging replaces the device’s login ownership — it becomes a
+                Tailarr user machine with zero access until you grant
+                services.
+              </p>
+              <div style={{ display: "flex", gap: "var(--sp-2)" }}>
+                <input
+                  className="input"
+                  autoFocus
+                  value={adoptId}
+                  placeholder="node ID, e.g. npaiBkAAg111CNTRL"
+                  onChange={(e) => setAdoptId(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") adopt();
+                    if (e.key === "Escape") setAdoptOpen(false);
+                  }}
+                  style={{ flex: 1 }}
+                />
+                <button
+                  className={"btn btn--primary btn--sm" + (adopting ? " btn--loading" : "")}
+                  disabled={adopting || !adoptId.trim()}
+                  onClick={adopt}
+                >
+                  Adopt
+                </button>
+                <button
+                  className="btn btn--ghost btn--sm"
+                  onClick={() => setAdoptOpen(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
 
           {mintedKey && (
             <div className="card" style={{ padding: "var(--sp-4)", marginTop: "var(--sp-3)" }}>

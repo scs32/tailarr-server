@@ -828,6 +828,41 @@ def op_user_access(node_id, service, allow):
     return {"ok": True, "id": node_id, "error": None}
 
 
+def op_user_adopt(node_id):
+    """Adopt an already-enrolled tailnet device as a user machine: add
+    tag:tailarr-user via the device-tags API.
+
+    For devices that joined by logging in (an Apple TV signed in with an
+    Apple ID, say) instead of enrolling with a minted key. Tagging a
+    login-owned device converts it to a tagged device — Tailscale drops
+    the user ownership and key expiry. It appears on the Users page with
+    zero badges.
+    """
+    node_id = (node_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9]+", node_id):
+        return {"ok": False, "id": node_id, "hostname": "",
+                "error": "That doesn't look like a node ID."}
+    code, dev = ts_api("GET", f"/device/{node_id}")
+    if code != 200:
+        return {"ok": False, "id": node_id, "hostname": "",
+                "error": f"device API: {dev}"}
+    hostname = dev.get("hostname", "")
+    tags = dev.get("tags") or []
+    if TS_USER_TAG in tags:
+        return {"ok": True, "id": node_id, "hostname": hostname,
+                "error": None}  # already a user machine
+    if any(t.startswith("tag:tailarr") for t in tags):
+        return {"ok": False, "id": node_id, "hostname": hostname,
+                "error": f"'{hostname}' is part of the Tailarr fleet, "
+                         "not a consumer device."}
+    code, resp = ts_api("POST", f"/device/{node_id}/tags",
+                        {"tags": sorted(tags + [TS_USER_TAG])})
+    if code != 200:
+        return {"ok": False, "id": node_id, "hostname": hostname,
+                "error": f"tags API: {resp}"}
+    return {"ok": True, "id": node_id, "hostname": hostname, "error": None}
+
+
 # =========================================================================
 # Tailnet policy sync — the fenced-grant generator (docs/acl-design.md §4)
 #
@@ -2131,6 +2166,12 @@ def api_post(path, data):
 
     if path == "/api/users/keys":
         result = op_user_key()
+        return (200 if result["ok"] else 400), result
+
+    # Must precede the /api/users/<id> match — "adopt" is a valid node-ID
+    # shape.
+    if path == "/api/users/adopt":
+        result = op_user_adopt(data.get("id") or "")
         return (200 if result["ok"] else 400), result
 
     m = re.fullmatch(r"/api/users/([A-Za-z0-9]+)/access", path)

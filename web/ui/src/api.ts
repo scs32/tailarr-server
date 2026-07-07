@@ -106,6 +106,12 @@ export const api = {
       {},
     ),
 
+  userAdopt: (id: string) =>
+    postJSON<{ ok: boolean; error: string | null; hostname: string }>(
+      "/api/users/adopt",
+      { id },
+    ),
+
   userAccess: (id: string, service: string, allow: boolean) =>
     postJSON<{ ok: boolean; error: string | null }>(
       `/api/users/${id}/access`,

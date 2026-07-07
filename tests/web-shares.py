@@ -308,6 +308,10 @@ check(app.op_user_access("nTESTNODE1", "nope", True)["error"] == "Unknown servic
       "users: access toggle rejects unknown service")
 check("token" in app.op_user_access("nTESTNODE1", "testpod", True)["error"],
       "users: access toggle without token fails cleanly")
+check("node ID" in app.op_user_adopt("not a node id!")["error"],
+      "users: adopt rejects malformed node IDs")
+check("token" in app.op_user_adopt("nTESTNODE1")["error"],
+      "users: adopt without token fails cleanly")
 
 # --- policy generator: pure-text fence splicing (offline) ---
 POLICY = """{
