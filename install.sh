@@ -3,7 +3,16 @@ set -euo pipefail
 
 echo "[INFO] Installing and launching Tailarr..."
 
+# Engine scripts land in the current directory — but never scatter them
+# across the filesystem root. `container exec` (no login shell) starts at
+# "/", which is how people run this inside an apple/container guest.
 WORKDIR="$(pwd)"
+if [[ "$WORKDIR" == "/" ]]; then
+    WORKDIR="${HOME:-/root}/tailarr"
+    mkdir -p "$WORKDIR"
+    cd "$WORKDIR"
+    echo "[INFO] Running from /: installing into $WORKDIR instead."
+fi
 REPO_BASE_URL="https://raw.githubusercontent.com/scs32/tailarr-server/main"
 
 # Package installs need sudo only when not already root (containers and

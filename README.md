@@ -115,10 +115,16 @@ the normal one-liner with your
 
 ```sh
 container exec -ti podhost bash
-# now inside the guest:
+# now inside the guest (exec starts at /, not a login shell):
+cd /root
 apt update && apt install -y curl
 TS_AUTHKEY=tskey-... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr-server/main/install.sh)"
 ```
+
+The engine scripts land in the directory you run the installer from
+(pods themselves always go to `$HOME/Pods`). If you do run it from `/`,
+the installer moves itself to `~/tailarr` rather than scattering scripts
+across the filesystem root.
 
 The bootstrap detects the guest's reduced MTU and pins podman's network
 MTU to match (nested guests run at MTU 1280; larger MTUs silently
