@@ -83,12 +83,66 @@ Add an entry to `homelab.js`:
 Optional fields: `"command"` (appended after the image) and
 `"memory_limit"` (podman `-m`).
 
-## Running on macOS with apple/container
+## Running on macOS in a full VM (recommended)
 
-Tailarr needs a Linux host, but you don't need a separate machine — run
-it inside a lightweight Linux guest with Apple's
-[`container`](https://github.com/apple/container) tool (macOS 15+, Apple
-silicon). The guest is where podman and the pods live; macOS just hosts it.
+Tailarr needs a Linux host, but you don't need a separate machine — a
+Debian VM under [VMware Fusion](https://www.vmware.com/products/desktop-hypervisor.html)
+(free for personal use; UTM works too) is the recommended way to run it
+on a Mac. Two field-tested rules make it work well:
+
+**Use bridged networking.** A bridged VM gets its own address on your
+LAN, so its Tailscale sidecars negotiate *direct* WireGuard paths.
+NAT-style networking (the apple/container path below, and Fusion's
+"Share with my Mac" mode) often forces Tailscale onto **DERP relays**,
+which caps every stream at relay speeds — unusable for media.
+
+**Give the VM its own virtual disk for media — don't pass host folders
+through.** Hypervisor shared folders (Fusion's hgfs, virtiofs) garble
+paths, permissions, and performance between macOS and the guest.
+Instead, add a second virtual disk in the VM's settings, format it ext4,
+and mount it at `/data` in the guest:
+
+```sh
+mkfs.ext4 /dev/sdb && mkdir -p /data
+echo '/dev/sdb /data ext4 defaults 0 2' >> /etc/fstab && mount -a
+```
+
+Then install Tailarr in the VM with the one-liner from the top of this
+README. On Debian/Ubuntu the bootstrap installs and enables a systemd
+unit (`tailarr-pods.service`), so the whole stack self-heals when the VM
+reboots. Register `/data` on the web UI's **Shares** page and attach it
+to your media pods — the catalog's download/media paths already live
+under it.
+
+**Media back out to macOS (native Plex, Finder, etc.).** The clean path
+is the reverse of what you might expect: the VM *owns* the media disk
+and **NFS-exports it to the Mac**, rather than the Mac pushing a folder
+in. On the VM:
+
+```sh
+apt install -y nfs-kernel-server
+echo '/data 192.168.0.0/16(ro,all_squash,insecure)' >> /etc/exports
+exportfs -ra
+```
+
+On the Mac: Finder → Go → Connect to Server → `nfs://<vm-ip>/data`
+(or `mount -t nfs -o resvport <vm-ip>:/data /Users/you/media`). Point a
+native Plex/Jellyfin at that mount for full-speed local playback with
+hardware transcoding. Narrow the export CIDR to your LAN, or export to
+the VM's Tailscale address and mount over the tailnet.
+
+## Running on macOS with apple/container (not recommended for media)
+
+> **⚠️ DERP relay warning.** apple/container puts guests behind a NAT'd
+> `vmnet` subnet that Tailscale usually cannot hole-punch. In practice
+> the pods' tailnet connections fall back to **DERP relays** far too
+> often, throttling transfers to relay speeds even between devices on
+> the same LAN. It works, and it's fine for *trying* Tailarr — but for a
+> media server, use the full-VM setup above.
+
+Apple's [`container`](https://github.com/apple/container) tool
+(macOS 15+, Apple silicon) runs a lightweight Linux guest where podman
+and the pods live; macOS just hosts it.
 
 **1. Install and start apple/container:**
 
@@ -152,11 +206,11 @@ login item) so the guest and pods come up without you.
 
 ## Supported platforms
 
-Debian/Ubuntu hosts with podman (auto-installed). Runs happily inside
-VMs and container-VMs — see **Running on macOS with apple/container**
-above for the fully worked nested-guest path, and
-`bootstrap-tailarr.sh` for the MTU and boot-persistence handling that
-nested hosts need. Everything else: PRs welcome.
+Debian/Ubuntu hosts with podman (auto-installed) — bare metal or a
+bridged VM. On macOS, prefer a full VM (**Running on macOS in a full
+VM** above); apple/container works but relays through DERP too often
+for media. See `bootstrap-tailarr.sh` for the MTU and boot-persistence
+handling that nested hosts need. Everything else: PRs welcome.
 
 ## Development
 
