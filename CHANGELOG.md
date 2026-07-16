@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.9.2 — blank host paths no longer break deploys (2026-07-16)
+
+- **Fix (HIGH, field report):** deploying a catalog app with the shared
+  `/data` mount attached and the app's own media path left blank (the
+  recommended pattern — e.g. Radarr without filling `/movies`) rendered
+  `-v :/movies`, and podman failed at start with "host directory cannot
+  be empty". The engine now drops any volume whose host path is blank,
+  whitespace, or a bare `:ro` — at parse time, so neither `run.sh` nor
+  `.config.json` carries it and re-renders can't resurface it. Applies to
+  catalog installs, custom pods, and reconfigures alike.
+
 ## v0.9.1 — polish from the first live self-upgrade (2026-07-16)
 
 The v0.8.0 → v0.9.0 upgrade ran end to end in the field (swap, health

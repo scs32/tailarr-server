@@ -15,6 +15,7 @@
 # Pass 5: log init never kills a deploy (invalid / read-only CWD regression)
 # Pass 6: nzbget download paths land under the shared /data mount
 #         (catalog config_set seeding, applied once per pod)
+# Pass 7: blank host paths are dropped, not rendered as `-v :/movies`
 set -eu
 
 REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
@@ -338,6 +339,41 @@ if grep -q "sed -i" "$PODMAN_LOG"; then
     fail "second run re-applied the seed (user config edits would be stomped)"
 fi
 pass "config seeding applied exactly once; re-runs leave user edits alone"
+
+# =========================================================================
+echo "=== Pass 7: blank host-path volumes are dropped (Radarr regression) ==="
+# Field report: deploying radarr with the shared /data mount attached and
+# the app's own /movies host path left BLANK rendered `-v :/movies`, and
+# podman failed at start with "host directory cannot be empty". Blank (or
+# whitespace, or bare-:ro) host paths must be omitted entirely.
+: > "$PODMAN_LOG"
+render "{
+  \"container\": \"radarrtest\", \"image\": \"docker.io/linuxserver/radarr:latest\",
+  \"network_mode\": \"bridge\", \"ports\": {\"7878\": \"7878\"},
+  \"restart_policy\": \"unless-stopped\",
+  \"auth_key_file\": \"$HOME/Pods/.tailscale_authkey\",
+  \"base_path\": \"$HOME/Pods\", \"environment\": {},
+  \"volumes\": {\"/config\": \"$HOME/Pods/radarrtest/config\",
+                 \"/movies\": \"\", \"/tv\": \"   \", \"/archive\": \":ro\",
+                 \"/data\": \"$HOME/poddata\"},
+  \"command\": \"\"
+}"
+
+SVC_DIR="$HOME/Pods/radarrtest"
+if grep -qE -- '-v +:' "$SVC_DIR/run.sh"; then
+    fail "run.sh renders a volume with an empty host path (-v :/...)"
+fi
+grep -q -- "-v $HOME/Pods/radarrtest/config:/config" "$SVC_DIR/run.sh" \
+    || fail "non-blank volume was lost by the blank-path filter"
+grep -q -- "-v $HOME/poddata:/data" "$SVC_DIR/run.sh" \
+    || fail "shared data volume was lost by the blank-path filter"
+if grep -qE '"(/movies|/tv|/archive)"' "$SVC_DIR/.config.json"; then
+    fail "blank-host volumes leaked into .config.json (would resurface on re-render)"
+fi
+pass "blank/whitespace/:ro-only host paths dropped; real volumes kept"
+
+run_generated "$SVC_DIR"
+pass "radarr-shaped pod with a blanked per-app path deploys cleanly"
 
 echo ""
 echo "SMOKE TEST PASSED"

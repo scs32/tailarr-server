@@ -45,9 +45,15 @@ parse_service_config() {
     local env_vars_json
     env_vars_json=$(jq -c '.environment // {}' <<<"$config_json")
     
-    # Parse volumes
+    # Parse volumes. Entries whose HOST path is blank are dropped: the
+    # install forms prefill a per-app media path (e.g. /movies) that users
+    # blank out when the shared /data mount covers it — rendering those
+    # would emit `-v :/movies` and podman dies at start with "host
+    # directory cannot be empty".
     local volumes_json
-    volumes_json=$(jq -c '.volumes // {}' <<<"$config_json")
+    volumes_json=$(jq -c '.volumes // {} | with_entries(
+        select(((.value // "") | rtrimstr(":ro") | gsub("\\s+"; "")) != ""))' \
+        <<<"$config_json")
     
     # Parse ports
     local ports_json
