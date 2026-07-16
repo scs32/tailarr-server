@@ -168,6 +168,47 @@ sleep "\$WAIT"
 
 EOF
 
+    # --- One-time app-config seeding (catalog config_file/config_set) ---
+    local config_file config_set_json
+    config_file=$(jq -r '.config_file // ""' <<<"$service_info")
+    config_set_json=$(jq -c '.config_set // {}' <<<"$service_info")
+    if [[ -n "$config_file" && "$config_set_json" != "{}" ]]; then
+        cat << EOF
+# Seed catalog-defined defaults into the app's own config file (e.g.
+# nzbget's DestDir/InterDir, which the base image points at /downloads —
+# a path mounted nowhere under the shared-/data layout). Applied ONCE per
+# pod: the .config-seeded sentinel keeps re-renders (updates,
+# reconfigures) from stomping values the user has since changed in the
+# app itself. If the app has not written its config file yet, skip
+# WITHOUT the sentinel so the next run seeds it.
+if [ ! -f "\$(pwd)/.config-seeded" ]; then
+  if podman exec $service sh -c "[ -f $config_file ]" 2>/dev/null; then
+    echo "Seeding $service config defaults..."
+EOF
+        local ck cv
+        while IFS=$'\t' read -r ck cv; do
+            # Rendered into a sed program below: refuse key/value shapes
+            # that could escape it (catalog entries are trusted the same
+            # as their image/command fields, this guards against typos).
+            if [[ "$ck" =~ ^[A-Za-z0-9_.-]+$ && "$cv" != *'|'* && "$cv" != *"'"* ]]; then
+                echo "    podman exec $service sed -i 's|^${ck}=.*|${ck}=${cv}|' $config_file"
+            else
+                log_warn "config_set: skipping unsafe key/value pair for '$ck'"
+            fi
+        done < <(jq -r '.config_set | to_entries[] | "\(.key)\t\(.value)"' <<<"$service_info")
+        cat << EOF
+    touch "\$(pwd)/.config-seeded"
+    echo "Restarting $service to pick up seeded config..."
+    podman restart $service
+    sleep "\$WAIT"
+  else
+    echo "Note: $config_file not present yet - defaults will be seeded on the next run"
+  fi
+fi
+
+EOF
+    fi
+
     # --- Bind-address fix (Arr-suite style config.xml) ---
     if [[ -n "$primary_port" ]]; then
         cat << EOF

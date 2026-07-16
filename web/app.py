@@ -36,7 +36,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -341,6 +341,8 @@ def config_from_info(info):
         "command": info.get("command", ""),
         "memory_limit": info.get("memory_limit", ""),
         "shares": info.get("shares", []),
+        "config_file": info.get("config_file", ""),
+        "config_set": info.get("config_set", {}),
     }
 
 
@@ -1653,6 +1655,10 @@ def op_install(req):
         "volumes": volumes,
         "command": req.get("command", ""),
         "shares": sorted(attached),
+        # Catalog-defined app-config seeding (applied once, after the
+        # first start — see generate-run-template.sh).
+        "config_file": req.get("config_file", ""),
+        "config_set": req.get("config_set") or {},
     }
     result = run_create(config)
     output = result.stdout + result.stderr
@@ -1946,6 +1952,10 @@ def _run_reconfigure(name, data, info, image):
         "command": data.get("command", ""),
         "memory_limit": (data.get("memory_limit") or "").strip(),
         "shares": sorted(attached),
+        # Config seeding is one-time (sentinel-gated in run.sh) and not
+        # user-editable — carry it through so a re-render keeps it.
+        "config_file": info.get("config_file", ""),
+        "config_set": info.get("config_set", {}),
     }
 
     pull_out = ""
@@ -2404,6 +2414,8 @@ def _install_req_from_json(data):
             "restart_policy": "unless-stopped",
             "shares": data.get("shares", []),
             "authkey": data.get("authkey", ""),
+            "config_file": data.get("config_file", ""),
+            "config_set": data.get("config_set", {}),
         }, None
     spec = resolve_service(name)
     if not spec:
@@ -2423,6 +2435,8 @@ def _install_req_from_json(data):
         "restart_policy": spec.get("restart_policy", "unless-stopped"),
         "shares": data.get("shares", []),
         "authkey": data.get("authkey", ""),
+        "config_file": spec.get("config_file", ""),
+        "config_set": spec.get("config_set") or {},
     }, None
 
 
@@ -2557,6 +2571,47 @@ def api_post(path, data):
 
 
 # =========================================================================
+# Controller HTTPS serve self-heal
+# =========================================================================
+def ensure_controller_serve():
+    """Re-assert `tailscale serve` on the controller's OWN sidecar.
+
+    Service pods re-render their sidecar on every run.sh, so their
+    declarative TS_SERVE_CONFIG is re-applied whenever they start. The
+    controller's sidecar, however, is created once by bootstrap-tailarr.sh:
+    if HTTPS certificates are enabled on the tailnet AFTER that first
+    bootstrap, a plain restart of the sidecar can come up with "No serve
+    config" and stay that way (containerboot does not re-resolve the cert
+    domain). Verify on controller start and periodically, applying the same
+    proxy the bootstrap serve.json declares. Best-effort and quiet when
+    podman or the sidecar is unavailable (dev/CI runs, first bootstrap)."""
+    r = podman("exec", "tailscale-tailarr", "tailscale", "serve", "status",
+               timeout=15)
+    if r.returncode != 0:
+        return  # no podman / no sidecar / tailscale not up — nothing to do
+    out = (r.stdout or "") + (r.stderr or "")
+    if out.strip() and "No serve config" not in out:
+        return  # serve already configured
+    a = podman("exec", "tailscale-tailarr", "tailscale", "serve", "--bg",
+               str(PORT), timeout=30)
+    if a.returncode == 0:
+        print(f"controller serve re-applied (https:443 -> 127.0.0.1:{PORT})")
+    else:
+        print("controller serve re-apply failed (are HTTPS certificates "
+              "enabled on the tailnet?): "
+              + (a.stdout + a.stderr).strip().replace("\n", " "))
+
+
+def _serve_ensure_loop():
+    while True:
+        try:
+            ensure_controller_serve()
+        except Exception as e:  # never let the self-heal thread die
+            print(f"serve self-heal error: {e}")
+        time.sleep(900)
+
+
+# =========================================================================
 # HTTP server
 # =========================================================================
 class Handler(BaseHTTPRequestHandler):
@@ -2636,4 +2691,5 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     print(f"Tailarr web UI on :{PORT} (pods dir: {PODS_DIR})")
     maybe_check_updates()  # kick a first check if the cache is stale
+    threading.Thread(target=_serve_ensure_loop, daemon=True).start()
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()

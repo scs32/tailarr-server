@@ -57,6 +57,14 @@ parse_service_config() {
     # pods can be re-rendered against the shares registry later.
     local shares_json
     shares_json=$(jq -c '.shares // []' <<<"$config_json")
+
+    # Optional catalog-defined app-config seeding: key=value lines to set
+    # in config_file inside the container, once, after the first start
+    # (e.g. pointing nzbget's DestDir under the shared /data mount when
+    # the base image defaults to a path that is mounted nowhere).
+    local config_file config_set_json
+    config_file=$(jq -r '.config_file // ""' <<<"$config_json")
+    config_set_json=$(jq -c '.config_set // {}' <<<"$config_json")
     
     # Determine primary port
     local primary_port
@@ -99,10 +107,12 @@ parse_service_config() {
         --arg memory_limit "$memory_limit" \
         --arg network_mode "$network_mode" \
         --arg primary_port "$primary_port" \
+        --arg config_file "$config_file" \
         --argjson env_vars "$env_vars_json" \
         --argjson volumes "$volumes_json" \
         --argjson ports "$ports_json" \
         --argjson shares "$shares_json" \
+        --argjson config_set "$config_set_json" \
         '{
             service: $service,
             image: $image,
@@ -121,7 +131,9 @@ parse_service_config() {
             environment: $env_vars,
             volumes: $volumes,
             ports: $ports,
-            shares: $shares
+            shares: $shares,
+            config_file: $config_file,
+            config_set: $config_set
         }')
     
     echo "$service_info"

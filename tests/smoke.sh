@@ -13,6 +13,8 @@
 # Pass 3: funnel render (AllowFunnel opt-in)
 # Pass 4: spent/deleted key tolerated when Tailscale state exists
 # Pass 5: log init never kills a deploy (invalid / read-only CWD regression)
+# Pass 6: nzbget download paths land under the shared /data mount
+#         (catalog config_set seeding, applied once per pod)
 set -eu
 
 REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
@@ -267,6 +269,67 @@ LOGCFG logtest-env | LOG_FILE="$PINNED" "$BASH_BIN" "$REPO_DIR/create.sh" \
 [ -f "$PINNED" ] || fail "env-pinned LOG_FILE was not written"
 grep -q "Tailarr Deployment Log" "$PINNED" || fail "env-pinned log has no header"
 pass "absolute LOG_FILE from the environment is honored"
+
+# =========================================================================
+echo "=== Pass 6: nzbget paths under the shared /data mount (config_set) ==="
+# Regression for the Debian VM deployment where a fresh nzbget wrote
+# completed downloads to the base image's default DestDir (/downloads/…,
+# and /Downloads/… on older images) — a path mounted NOWHERE under the
+# shared-/data layout, so the *arr apps could never import anything
+# without a remote-path-mapping band-aid. The catalog must (a) mount the
+# shared /data and (b) seed DestDir/InterDir under it, once per pod.
+
+# 6a: catalog invariant — nzbget's seeded dirs live under a mounted path
+NZB_VOLS=$(jq -r '.[] | select(.name == "nzbget") | .volumes | to_entries[].value' "$REPO_DIR/homelab.js")
+echo "$NZB_VOLS" | grep -qx "/data" || fail "nzbget catalog entry no longer mounts /data"
+for key in DestDir InterDir; do
+    val=$(jq -r --arg k "$key" '.[] | select(.name == "nzbget") | .config_set[$k] // ""' "$REPO_DIR/homelab.js")
+    case "$val" in
+        /data/*) ;;
+        *) fail "nzbget catalog $key ('$val') is not under the shared /data mount" ;;
+    esac
+done
+pass "catalog seeds nzbget DestDir/InterDir under the mounted /data"
+
+# 6b: render nzbget from the catalog (as the controller does) and check
+# the one-time seeding block in run.sh
+: > "$PODMAN_LOG"
+printf '%s\n' "$TEST_KEY" > "$HOME/Pods/.tailscale_authkey"
+NZBGET=$(jq -c --arg home "$HOME" '
+    .[] | select(.name == "nzbget") | {
+        container: .name, image: .image, ports: .ports,
+        environment: .environment,
+        volumes: (.volumes | with_entries(.value = "\($home)/Pods/nzbget/data\(.key)")),
+        network_mode: "bridge", restart_policy: "unless-stopped",
+        auth_key_file: "\($home)/Pods/.tailscale_authkey",
+        base_path: "\($home)/Pods", command: "",
+        config_file: .config_file, config_set: .config_set
+    }' "$REPO_DIR/homelab.js")
+render "$NZBGET"
+
+SVC_DIR="$HOME/Pods/nzbget"
+grep -q "sed -i 's|^DestDir=.*|DestDir=/data/downloads/completed|' /config/nzbget.conf" "$SVC_DIR/run.sh" \
+    || fail "run.sh does not seed DestDir under /data"
+grep -q "sed -i 's|^InterDir=.*|InterDir=/data/downloads/intermediate|' /config/nzbget.conf" "$SVC_DIR/run.sh" \
+    || fail "run.sh does not seed InterDir under /data"
+grep -q '.config-seeded' "$SVC_DIR/run.sh" \
+    || fail "config seeding is not sentinel-gated (would stomp user edits on re-render)"
+grep -q '"config_set"' "$SVC_DIR/.config.json" \
+    || fail "config_set not persisted in .config.json (re-renders would drop it)"
+pass "run.sh seeds nzbget paths under /data, gated by a one-time sentinel"
+
+# 6c: seeding executes once, then never again (stubbed podman)
+run_generated "$SVC_DIR"
+grep -q "exec nzbget sed -i s|^DestDir=" "$PODMAN_LOG" \
+    || fail "first run did not apply the DestDir seed"
+grep -q "restart nzbget" "$PODMAN_LOG" || fail "seeding did not restart the service"
+[ -f "$SVC_DIR/.config-seeded" ] || fail "sentinel not written after seeding"
+: > "$PODMAN_LOG"
+run_generated "$SVC_DIR"
+if grep -q "sed -i" "$PODMAN_LOG"; then
+    fail "second run re-applied the seed (user config edits would be stomped)"
+fi
+pass "config seeding applied exactly once; re-runs leave user edits alone"
 
 echo ""
 echo "SMOKE TEST PASSED"

@@ -1,12 +1,60 @@
 # Changelog
 
-## Unreleased
+## v0.7.0 — fixes from a real Debian VM deployment (2026-07-16)
+
+Bugs surfaced by a production install on Debian 13 (podman, per-service
+Tailscale sidecars, shared `/data` media mount).
+
+### Fixes
+
+- **nzbget downloads land under the shared `/data` mount out of the box.**
+  The linuxserver base image bakes `DestDir=/downloads/completed` /
+  `InterDir=/downloads/intermediate` into `nzbget.conf` — paths mounted
+  nowhere under the shared-data layout, so completed downloads fell onto
+  the container's ephemeral overlay and the *arr apps could never import
+  them without a remote-path-mapping band-aid. The catalog now mounts the
+  shared data path at `/data` and seeds `DestDir=/data/downloads/completed`
+  and `InterDir=/data/downloads/intermediate` into the pod's own config —
+  once, after the first start (a `.config-seeded` sentinel keeps re-renders
+  from stomping later user edits). Fresh nzbget + Sonarr deploys import
+  with zero remote path mapping, per the TRaSH-guides single-shared-mount
+  convention. General mechanism: catalog entries (and custom installs) may
+  declare `config_file` + `config_set` key=value seeds.
+- **The download pipeline shares one mount.** sonarr/radarr/lidarr,
+  qbittorrent and sabnzbd catalog entries now mount `/path/to/data` at
+  `/data` instead of per-service `/downloads` silos, so every pipeline
+  container sees identical paths (attach the same share, or fill the same
+  host path). Existing pods keep their saved volumes — this changes fresh
+  installs only. (qbittorrent/sabnzbd still need their save paths pointed
+  at `/data/downloads/...` in-app; config seeding for their formats is a
+  candidate follow-up.)
+- **Controller HTTPS self-heals.** The controller sidecar gets its serve
+  config declaratively at bootstrap only; if HTTPS certificates were
+  enabled on the tailnet after that, a plain sidecar restart came up with
+  "No serve config" until someone applied `tailscale serve` by hand.
+  The controller now verifies serve on startup and every 15 minutes,
+  re-applying the bootstrap proxy whenever it is missing — HTTPS comes up
+  as soon as certs become available. Service pods were already fine (their
+  run.sh re-renders the sidecar declaratively on every start).
+
+### Features
+
+- **Boot persistence on Debian/Ubuntu.** `bootstrap-tailarr.sh` now
+  installs and enables a `tailarr-pods.service` systemd oneshot
+  (`After=network-online.target`) that runs `start-pods.sh` — sidecars,
+  then services — so the stack self-heals on reboot with no manual wiring.
+  Non-systemd hosts (e.g. apple/container guests) keep the documented
+  manual hookup.
+
+### Previously unreleased
 
 - Fresh installs pin the controller image to the release the scripts ship
   with (`ghcr.io/scs32/tailarr:v<VERSION>`) instead of `:latest`, closing
   the GHCR manifest-lag window right after a release. `HOMEPOD_IMAGE`
   still overrides. CI now fails if the bootstrap pin and the controller
   `VERSION` disagree.
+- `install.sh` no longer scatters engine scripts across `/` when executed
+  inside a container.
 
 ## v0.6.0 — onboarding: credential wizard + auto-minted keys (2026-07-15)
 

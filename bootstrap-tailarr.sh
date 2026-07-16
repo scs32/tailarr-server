@@ -15,7 +15,7 @@ PODS_DIR="${PODS_DIR:-$HOME/Pods}"
 # fresh install right after a release can't catch a stale :latest manifest
 # from GHCR. CI enforces that this matches web/app.py's VERSION; bump both
 # when cutting a release. HOMEPOD_IMAGE still overrides everything.
-TAILARR_VERSION="0.6.0"
+TAILARR_VERSION="0.7.0"
 IMAGE="${HOMEPOD_IMAGE:-ghcr.io/scs32/tailarr:v${TAILARR_VERSION}}"
 TS_IMAGE="docker.io/tailscale/tailscale:stable"
 SOCKET="/run/podman/podman.sock"
@@ -57,8 +57,10 @@ fi
 # --- boot recovery script: this host may keep /run on disk (not tmpfs),
 # so podman cannot detect reboots and wedges on stale state. Install a
 # start script that wipes the runroot once per boot (tmpfs sentinel in
-# /dev/shm) and starts sidecars before services. Wire it to whatever
-# starts this host at boot (LaunchAgent, cron @reboot, etc.).
+# /dev/shm) and starts sidecars before services. On systemd hosts
+# (Debian/Ubuntu — the documented target) it is wired to boot below;
+# elsewhere wire it to whatever starts this host at boot (LaunchAgent,
+# cron @reboot, etc.).
 cat > /root/start-pods.sh << 'STARTEOF'
 #!/bin/sh
 # Bring up the pod fleet after guest boot (see bootstrap-tailarr.sh).
@@ -105,6 +107,30 @@ done
 podman ps --format "{{.Names}}"
 STARTEOF
 chmod +x /root/start-pods.sh
+
+# --- boot persistence: on systemd hosts, run start-pods.sh at boot so the
+# stack self-heals after a reboot with no manual wiring. Ordering lives in
+# the script itself (sidecars, then services). Harmless to re-run; skipped
+# on non-systemd hosts (e.g. apple/container guests with a minimal init).
+if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null; then
+    cat > /etc/systemd/system/tailarr-pods.service << 'UNITEOF'
+[Unit]
+Description=Tailarr pod fleet (Tailscale sidecars, then services)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/root/start-pods.sh
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+    systemctl daemon-reload
+    systemctl enable tailarr-pods.service >/dev/null 2>&1 || true
+    echo "Enabled tailarr-pods.service (fleet starts at boot)."
+fi
 
 mkdir -p "$PODS_DIR/tailarr/tailscale"
 

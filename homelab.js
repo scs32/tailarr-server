@@ -6,7 +6,7 @@
     "volumes": {
       "/path/to/config": "/config",
       "/path/to/tv": "/tv",
-      "/path/to/downloads": "/downloads"
+      "/path/to/data": "/data"
     },
     "environment": {
       "PUID": "1000",
@@ -26,7 +26,7 @@
     "volumes": {
       "/path/to/config": "/config",
       "/path/to/movies": "/movies",
-      "/path/to/downloads": "/downloads"
+      "/path/to/data": "/data"
     },
     "environment": {
       "PUID": "1000",
@@ -46,7 +46,7 @@
     "volumes": {
       "/path/to/config": "/config",
       "/path/to/music": "/music",
-      "/path/to/downloads": "/downloads"
+      "/path/to/data": "/data"
     },
     "environment": {
       "PUID": "1000",
@@ -103,7 +103,7 @@
     "default_port": 8080,
     "volumes": {
       "/path/to/config": "/config",
-      "/path/to/downloads": "/downloads"
+      "/path/to/data": "/data"
     },
     "environment": {
       "PUID": "1000",
@@ -122,8 +122,7 @@
     "default_port": 8080,
     "volumes": {
       "/path/to/config": "/config",
-      "/path/to/downloads": "/downloads",
-      "/path/to/incomplete-downloads": "/incomplete-downloads"
+      "/path/to/data": "/data"
     },
     "environment": {
       "PUID": "1000",
@@ -142,7 +141,12 @@
     "default_port": 6789,
     "volumes": {
       "/path/to/config": "/config",
-      "/path/to/downloads": "/downloads"
+      "/path/to/data": "/data"
+    },
+    "config_file": "/config/nzbget.conf",
+    "config_set": {
+      "DestDir": "/data/downloads/completed",
+      "InterDir": "/data/downloads/intermediate"
     },
     "environment": {
       "PUID": "1000",
