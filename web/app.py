@@ -36,7 +36,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.9.2"
+VERSION = "0.9.3"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -1322,6 +1322,11 @@ def ts_policy_sync():
             except ValueError as e:
                 return {"ok": False, "changed": False, "error": f"policy fences: {e}"}
             if new_text == raw:
+                # Policy already right — but the field showed a node can
+                # still be missing its svc tag (tag write raced/failed).
+                # Every sync doubles as a tag reconcile trigger.
+                threading.Thread(target=ts_reconcile_tags,
+                                 daemon=True).start()
                 return {"ok": True, "changed": False, "error": None}
             code, resp, _ = _ts_acl("POST", "/validate", new_text)
             if code != 200 or '"message"' in resp:
@@ -1335,6 +1340,10 @@ def ts_policy_sync():
                 pass
             code, resp, _ = _ts_acl("POST", "", new_text, etag=etag)
             if code == 200:
+                # tagOwners just (re)landed: nodes whose tag write was
+                # rejected before this sync can be fixed now.
+                threading.Thread(target=ts_reconcile_tags,
+                                 daemon=True).start()
                 return {"ok": True, "changed": True, "error": None}
             if code != 412:
                 return {"ok": False, "changed": False, "error": f"acl POST: {resp[:300]}"}
@@ -1353,27 +1362,83 @@ def _ts_find_device(hostname):
     return matches[0] if matches else None
 
 
-def ts_tag_sidecar(name):
-    """Best-effort: ensure a pod's sidecar wears its identity tags. Runs in
-    the background after a successful start (the sidecar enrolls then).
-    Idempotent; preserves tag:tailarr-public; silent on failure — the next
-    start retries."""
+# Live identity-tag state per pod, fed by every ts_tag_sidecar run (post-
+# start hooks, reconcile passes). Surfaced as `identity` in /api/pods so a
+# mis-tagged service can never look fully green.
+_tag_state = {}  # name -> "ok" | "missing" | "unknown"
+_tag_state_lock = threading.Lock()
+
+
+def _record_tag_state(name, state):
+    with _tag_state_lock:
+        _tag_state[name] = state
+    return state
+
+
+def ts_tag_sidecar(name, attempts=6):
+    """Ensure a pod's sidecar wears its identity tags.
+
+    tag:tailarr-svc-<name> is the *dst* of the per-service access grant: a
+    node missing it passes every health check (the controller's broad
+    tag:tailarr grant still reaches it) while EVERY user device is dropped
+    at the packet filter — seen in the field as "LunaSea reaches sonarr
+    but not radarr" with nothing to go on. So this is no longer a silent
+    one-shot: failures (sidecar not enrolled yet, tags API rejecting
+    because the tagOwners policy sync hasn't landed) retry with backoff,
+    the outcome is recorded for the UI badge, and reconcile passes re-run
+    it on controller start, after policy syncs, and periodically.
+    Idempotent; preserves tag:tailarr-public. Returns the recorded state:
+    "ok" | "missing" | "unknown"."""
     if not _ts_token():
-        return
+        return _record_tag_state(name, "unknown")
     want = {"tag:tailarr",
             "tag:tailarr-ctrl" if name in CONTROLLER_PODS
             else f"tag:tailarr-svc-{name}"}
-    for _ in range(5):
+    delay = 3
+    for attempt in range(attempts):
+        if attempt:
+            time.sleep(delay)
+            delay = min(delay * 2, 30)  # 3+6+12+24+30 ≈ 75s worst case
         d = _ts_find_device(name)
-        if d:
-            tags = set(d.get("tags") or [])
-            if want <= tags:
-                return
-            keep = {t for t in tags if t == "tag:tailarr-public"}
-            ts_api("POST", f"/device/{d['nodeId']}/tags",
-                   {"tags": sorted(want | keep)})
-            return
-        time.sleep(3)  # enrollment may lag the container start by seconds
+        if not d:
+            continue  # enrollment may lag the container start by seconds
+        tags = set(d.get("tags") or [])
+        if want <= tags:
+            return _record_tag_state(name, "ok")
+        keep = {t for t in tags if t == "tag:tailarr-public"}
+        code, resp = ts_api("POST", f"/device/{d['nodeId']}/tags",
+                            {"tags": sorted(want | keep)})
+        if code == 200:
+            return _record_tag_state(name, "ok")
+        # Typical retryable rejection: tagOwners doesn't carry the svc tag
+        # yet because the policy sync raced this hook. Back off and retry.
+        print(f"tagging {name} (attempt {attempt + 1}/{attempts}): "
+              f"tags API {code}: {resp}")
+    print(f"identity tag NOT applied to {name} — user devices cannot reach "
+          "it until a reconcile pass succeeds (see the pod's identity badge)")
+    return _record_tag_state(name, "missing")
+
+
+def ts_reconcile_tags():
+    """Re-assert identity tags on every running sidecar (+ controller).
+
+    A single missed ts_tag_sidecar used to be unrecoverable in practice:
+    "the next start retries" only helps if that specific pod restarts, and
+    nothing does. Runs on controller start, after successful policy syncs,
+    and from the periodic maintenance loop, so a missed tag self-heals on
+    the next natural event. Cheap: one devices read per running sidecar, a
+    tags write only when something is wrong."""
+    if not _ts_token():
+        return
+    running = running_names()
+    names = sorted(set(deployed_services()) | (CONTROLLER_PODS & running))
+    for name in names:
+        if f"tailscale-{name}" in running:
+            ts_tag_sidecar(name, attempts=2)
+        else:
+            # No live sidecar: nothing to tag, and "missing" would be
+            # noise on a deliberately stopped pod.
+            _record_tag_state(name, "unknown")
 
 
 def ts_set_public(name, public):
@@ -1684,6 +1749,11 @@ def status_pods():
             "shares": info.get("shares", []),
             "update": bool(updates.get(image, {}).get("update")),
             "busy": pod_busy(name),
+            # Identity-tag health (see ts_tag_sidecar): "missing" means the
+            # sidecar lacks its tag:tailarr-svc-* — every user device is
+            # being dropped at the packet filter even though the service
+            # itself is healthy. Never let that look fully green.
+            "identity": _tag_state.get(name, "unknown"),
         })
     return out
 
@@ -3079,12 +3149,21 @@ def ensure_controller_serve():
               + (a.stdout + a.stderr).strip().replace("\n", " "))
 
 
-def _serve_ensure_loop():
+def _maintenance_loop():
+    """Periodic self-heal: controller serve config + sidecar identity tags.
+
+    Both failure modes are silent by nature (serve: HTTPS just absent;
+    tags: users filtered while everything reads healthy), so they are
+    re-asserted on a timer as well as on their natural trigger events."""
     while True:
         try:
             ensure_controller_serve()
         except Exception as e:  # never let the self-heal thread die
             print(f"serve self-heal error: {e}")
+        try:
+            ts_reconcile_tags()
+        except Exception as e:
+            print(f"tag reconcile error: {e}")
         time.sleep(900)
 
 
@@ -3176,7 +3255,7 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     print(f"Tailarr web UI on :{PORT} (pods dir: {PODS_DIR})")
     maybe_check_updates()  # kick a first check if the cache is stale
-    threading.Thread(target=_serve_ensure_loop, daemon=True).start()
+    threading.Thread(target=_maintenance_loop, daemon=True).start()
     # Existing installs get the mounts drop-in on first start after an
     # upgrade, not only when shares next change.
     threading.Thread(target=_sync_mounts_dropin, daemon=True).start()

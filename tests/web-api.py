@@ -549,6 +549,80 @@ try:
 finally:
     app.podman = _real_podman
 
+# --- sidecar identity tags: retry, surface, reconcile ---------------------
+# Field report (HIGH): radarr's sidecar never got tag:tailarr-svc-radarr
+# (one silent background attempt, no retry, no visibility) so every user
+# device was dropped at the packet filter while the service looked green.
+
+
+class FakeTsApi:
+    """Devices list with a mis-tagged pod; POST /tags controllable."""
+
+    def __init__(self):
+        self.mode = "reject"
+        self.tag_posts = []
+
+    def __call__(self, method, path, body=None):
+        if method == "GET" and path == "/tailnet/-/devices":
+            return 200, {"devices": [
+                {"hostname": "apitest", "nodeId": "n1",
+                 "tags": ["tag:tailarr", "tag:tailarr-public"],
+                 "lastSeen": "2026-07-16T00:00:00Z"},
+            ]}
+        if method == "POST" and path.startswith("/device/"):
+            self.tag_posts.append(body)
+            if self.mode == "reject":
+                return 400, {"message": "tag not permitted (tagOwners)"}
+            return 200, {}
+        return 200, {}
+
+
+_real_ts_token2 = app._ts_token
+_real_ts_api2 = app.ts_api
+fake_ts = FakeTsApi()
+app._ts_token = lambda: "dummy-test-token"
+app.ts_api = fake_ts
+try:
+    state = app.ts_tag_sidecar("apitest", attempts=2)
+    check(state == "missing" and len(fake_ts.tag_posts) == 2,
+          "rejected tag write retries with backoff, then records 'missing'")
+    code, data = get("/api/pods")
+    pod = next(p for p in data["pods"] if p["name"] == "apitest")
+    check(pod["identity"] == "missing",
+          "mis-tagged pod surfaces identity=missing in /api/pods")
+
+    fake_ts.mode = "ok"
+    fake_ts.tag_posts = []
+    state = app.ts_tag_sidecar("apitest", attempts=1)
+    check(state == "ok", "tag applied once the tags API accepts")
+    check(fake_ts.tag_posts
+          and "tag:tailarr-svc-apitest" in fake_ts.tag_posts[0]["tags"]
+          and "tag:tailarr-public" in fake_ts.tag_posts[0]["tags"],
+          "svc tag applied; tag:tailarr-public preserved")
+    code, data = get("/api/pods")
+    pod = next(p for p in data["pods"] if p["name"] == "apitest")
+    check(pod["identity"] == "ok", "identity flips to ok after the fix")
+
+    # Reconcile pass: running sidecars re-tagged, stopped pods left alone.
+    tagged = []
+    _real_tag = app.ts_tag_sidecar
+    app.ts_tag_sidecar = lambda n, attempts=6: tagged.append(n)
+    _real_podman2 = app.podman
+    app.podman = lambda *a, **kw: _sp.CompletedProcess(
+        a, 0, "apitest\ntailscale-apitest\n", "")
+    try:
+        app.ts_reconcile_tags()
+    finally:
+        app.ts_tag_sidecar = _real_tag
+        app.podman = _real_podman2
+    check(tagged == ["apitest"],
+          "reconcile re-tags running sidecars only")
+    check(app._tag_state.get("extpod") == "unknown",
+          "stopped pod reads identity=unknown, not a false 'missing'")
+finally:
+    app._ts_token = _real_ts_token2
+    app.ts_api = _real_ts_api2
+
 # --- API errors are always JSON (never a dropped connection) --------------
 # An unexpected exception in a handler used to close the socket with no
 # HTTP response at all — scripted callers saw a bare RemoteDisconnected.

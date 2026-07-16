@@ -27,6 +27,10 @@ export interface Pod {
   shares: string[];
   update: boolean; // newer image available (daily digest check)
   busy: PodAction | null;
+  // Sidecar identity-tag health. "missing" = the node lacks its
+  // tag:tailarr-svc-* — user devices are dropped at the packet filter
+  // even though the service is healthy. Self-heals via reconcile passes.
+  identity: "ok" | "missing" | "unknown";
 }
 
 // GET /api/network — per-pod networking settings + live tailnet identity.

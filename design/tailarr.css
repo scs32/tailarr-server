@@ -288,6 +288,7 @@ a:hover { text-decoration: underline; }
   color: var(--warn); background: var(--warn-tint); border-color: rgba(251,191,36,.3);
   animation: pulse 1.1s ease-in-out infinite;
 }
+.chip--danger { color: var(--danger); background: var(--danger-tint); border-color: rgba(248,113,113,.35); }
 
 /* ChipPicker: the shared picking affordance (Users / Monitor / Shares).
    Assigned = removable chips; "+ Add" opens a searchable popover. */

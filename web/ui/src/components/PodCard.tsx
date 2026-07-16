@@ -62,6 +62,14 @@ export function PodCard({
             </div>
           )}
         </div>
+        {pod.identity === "missing" && (
+          <span
+            className="chip chip--danger"
+            title="This pod's tailnet node is missing its tag:tailarr-svc tag, so user devices are blocked at the Tailscale packet filter even though the service is healthy. Tailarr retries automatically (reconcile runs on policy syncs and every 15 min); if it persists, check the API credential and policy fences in Settings."
+          >
+            identity tag missing
+          </span>
+        )}
         {serverBusy && !busy && (
           <span className="chip chip--busy">{BUSY_LABEL[serverBusy] ?? serverBusy}</span>
         )}

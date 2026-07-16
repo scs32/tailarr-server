@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.9.3 — no more silent svc-tag failures (2026-07-16)
+
+Field report (HIGH): a freshly deployed service could be permanently
+unreachable by every user device while looking fully green everywhere.
+The per-service grant's dst is `tag:tailarr-svc-<name>` on the sidecar
+node — if the one background tagging attempt after pod start failed
+(node not enrolled yet, or the tagOwners policy sync hadn't landed so the
+tags API rejected it), nothing retried, nothing reported, and the packet
+filter silently dropped every user connection. The controller's broad
+`tag:tailarr` grant still reached the service, so health stayed clean.
+
+- **Tagging retries with backoff** (~75s window) instead of one silent
+  shot, and treats "tags API rejected" — the tagOwners race — as
+  retryable. Failures are logged.
+- **Reconciliation on every natural event**: controller start, every
+  successful policy sync, and a 15-minute maintenance pass re-assert
+  identity tags on all running sidecars (idempotent, one devices read; a
+  write only when wrong). A missed tag now self-heals instead of waiting
+  for that specific pod to restart — which nothing ever did.
+- **The failure is visible**: `/api/pods` entries carry
+  `identity: ok|missing|unknown`, and the dashboard shows a red
+  "identity tag missing" chip explaining that user devices are blocked
+  and that reconcile will retry. A service unreachable by all users can
+  no longer look fully green.
+
 ## v0.9.2 — blank host paths no longer break deploys (2026-07-16)
 
 - **Fix (HIGH, field report):** deploying a catalog app with the shared
