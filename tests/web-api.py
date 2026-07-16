@@ -379,6 +379,9 @@ try:
           "redeploy script carries a rollback to the old image")
     check("start-pods.sh" in script and "/host-root" in script,
           "redeploy script refreshes the host's start-pods.sh from the new image")
+    check(script.index("finish true") < script.index("/app/start-pods.sh"),
+          "outcome written the moment health passes, before artifact refresh "
+          "(result.json must not lag the version flip)")
 
     fake.names.append(app.UPGRADE_HELPER)
     code, data = post("/api/controller/upgrade", {"version": "9.9.8"})
@@ -545,6 +548,24 @@ try:
         "share delete re-syncs the drop-in")
 finally:
     app.podman = _real_podman
+
+# --- API errors are always JSON (never a dropped connection) --------------
+# An unexpected exception in a handler used to close the socket with no
+# HTTP response at all — scripted callers saw a bare RemoteDisconnected.
+
+
+def _boom(*a, **kw):
+    raise RuntimeError("kaboom")
+
+
+_real_upgrade_op = app.op_controller_upgrade
+app.op_controller_upgrade = _boom
+try:
+    code, data = post("/api/controller/upgrade", {})
+    check(code == 500 and data["ok"] is False and "kaboom" in data["error"],
+          "handler crash returns JSON 500, not a dropped connection")
+finally:
+    app.op_controller_upgrade = _real_upgrade_op
 
 catsrv.shutdown()
 srv.shutdown()

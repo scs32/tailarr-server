@@ -36,7 +36,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.9.0"
+VERSION = "0.9.1"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -605,6 +605,11 @@ podman rm -f {name}
 podman run -d --name {name} {run_flags} {new_image}
 
 if healthy; then
+    # Write the outcome FIRST: the new controller is already answering, so
+    # a poller reading result.json before this line would see the previous
+    # upgrade's outcome (observed in the field as a cosmetic lag).
+    echo "upgrade OK"
+    finish true false
     # Refresh host-side boot artifacts shipped in the new image (the
     # controller image carries start-pods.sh; /host-root is the host's
     # /root). The systemd unit only ever points at this script, so
@@ -614,8 +619,6 @@ if healthy; then
             && chmod +x /host-root/start-pods.sh \\
             && echo "refreshed /root/start-pods.sh from the new image"
     fi
-    echo "upgrade OK"
-    finish true false
     exit 0
 fi
 
@@ -3128,7 +3131,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(render_metrics().encode(), 200,
                               "text/plain; version=0.0.4; charset=utf-8")
         if url.path.startswith("/api/"):
-            code, obj = api_get(url.path)
+            try:
+                code, obj = api_get(url.path)
+            except Exception as e:  # noqa: BLE001 — same contract as do_POST
+                code, obj = 500, {"ok": False,
+                                  "error": f"{type(e).__name__}: {e}"}
             return self._send_json(obj, code)
         if self.serve_static(url.path):
             return
@@ -3151,6 +3158,10 @@ class Handler(BaseHTTPRequestHandler):
             code, obj = api_post(self.path, data)
         except subprocess.TimeoutExpired:
             return self._send_json({"error": "operation timed out"}, 504)
+        except Exception as e:  # noqa: BLE001 — scripted callers need a JSON
+            # error, not a dropped connection (single-user tailnet API, so
+            # surfacing the exception text is help, not a leak).
+            return self._send_json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
         self._send_json(obj, code)
 
     def log_message(self, fmt, *args):  # quieter default logging

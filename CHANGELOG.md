@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.9.1 — polish from the first live self-upgrade (2026-07-16)
+
+The v0.8.0 → v0.9.0 upgrade ran end to end in the field (swap, health
+gate, mount-guard drop-in). Two paper cuts it reported:
+
+- **API errors are always JSON now.** An unexpected exception in a
+  handler used to close the connection with no HTTP response at all —
+  scripted callers saw a bare connection drop. Both API verbs now return
+  `500 {"ok": false, "error": ...}` instead.
+- **`result.json` no longer lags the version flip.** The upgrade helper
+  wrote its outcome after refreshing host boot artifacts, so a poller
+  could see the new controller answering while `result.json` still held
+  the previous upgrade's outcome. The outcome is now written the moment
+  the health check passes.
+
 ## v0.9.0 — NFS exports on the Shares page (2026-07-16)
 
 The recommended macOS layout (see the README's new full-VM section) keeps
