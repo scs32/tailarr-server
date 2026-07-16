@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.8.0 — controller self-upgrade (2026-07-16)
+
+The controller can finally update itself — no more SSHing in for the
+pull → `rm -f` → long `podman run` dance (and no more getting bitten by
+GHCR manifest lag while doing it).
+
+### Features
+
+- **Upgrade from the UI.** Settings → Controller shows the running and
+  latest released versions (release list from the repo's git tags, checked
+  daily alongside the image-update check, cache-only on every page load)
+  with an "update available" hint in the sidebar. One click upgrades:
+  the controller pulls the **explicit new version tag first** (manifest-lag
+  safe — nothing is removed until the pull succeeds), then hands the swap
+  to a detached helper container, since a container cannot `podman rm -f`
+  itself. The helper replaces the controller on its existing Tailscale
+  sidecar (identity and HTTPS untouched, a few seconds of outage),
+  health-checks the new controller through the sidecar's netns, and
+  **rolls back to the old image automatically** if it doesn't come up.
+  Everything is logged to `Pods/.upgrade/upgrade.log`, and the outcome
+  (including rollbacks) is reported back on the Settings card.
+  New endpoints: `GET/POST /api/controller/upgrade`,
+  `POST /api/controller/upgrade/check`; `/api/info` gains
+  `upgrade_available`.
+- **Fleet re-render** (`POST /api/fleet {do: "rerender"}`). Engine fixes
+  only reach existing pods when their scripts are re-rendered — after an
+  upgrade the Settings card offers "Apply engine updates to all pods",
+  which re-renders every non-controller pod from its saved `.config.json`
+  and re-runs it (brief per-pod restart; images, volumes, environment and
+  Tailscale identities unchanged).
+- **Host boot artifacts stay current.** The controller image now ships
+  `start-pods.sh` (extracted at image build from the bootstrap heredoc —
+  single source of truth), and the upgrade helper refreshes the host's
+  `/root/start-pods.sh` from the new image. The systemd unit points at
+  that script, so no daemon-reload is needed.
+
+### Notes
+
+- Explicit downgrades work too: pass a version to
+  `POST /api/controller/upgrade` — same pull-first/rollback safety net.
+- The upgrade never touches service pods or the controller's sidecar.
+
 ## v0.7.0 — fixes from a real Debian VM deployment (2026-07-16)
 
 Bugs surfaced by a production install on Debian 13 (podman, per-service

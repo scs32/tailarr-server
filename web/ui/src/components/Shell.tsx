@@ -25,8 +25,15 @@ const NAV = [
 
 export function Sidebar() {
   const [version, setVersion] = useState("");
+  const [upgrade, setUpgrade] = useState(false);
   useEffect(() => {
-    api.info().then((i) => setVersion(i.version)).catch(() => {});
+    api
+      .info()
+      .then((i) => {
+        setVersion(i.version);
+        setUpgrade(i.upgrade_available);
+      })
+      .catch(() => {});
   }, []);
   return (
     <aside className="sidebar">
@@ -68,6 +75,14 @@ export function Sidebar() {
           }}
         >
           Tailarr v{version}
+          {upgrade && (
+            <>
+              {" · "}
+              <NavLink to="/settings" style={{ color: "var(--accent)" }}>
+                update available
+              </NavLink>
+            </>
+          )}
         </div>
       )}
     </aside>

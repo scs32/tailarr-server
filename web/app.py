@@ -36,7 +36,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -60,6 +60,15 @@ _catalog_cache = {}  # url -> (expires_at, services, error)
 # cached here. Refreshed daily (piggybacked on /api/pods) or on demand.
 UPDATES_FILE = os.path.join(PODS_DIR, ".updates.json")
 UPDATES_TTL = 24 * 3600
+
+# Controller self-upgrade: released versions come from the repo's git tags
+# (the release workflow builds ghcr images on tag push; there are no GitHub
+# Releases). The check is best-effort and cached; every /api/info read is
+# cache-only so the UI never blocks on GitHub.
+RELEASE_REPO = "scs32/tailarr-server"
+RELEASE_FILE = os.path.join(PODS_DIR, ".release.json")
+UPGRADE_DIR = os.path.join(PODS_DIR, ".upgrade")
+UPGRADE_HELPER = "tailarr-upgrade"  # detached container that swaps the controller
 
 # Per-pod app-data snapshots: stop -> tar the pod dir -> start. The pod dir
 # is the pod's entire mutable state (only media pierces the barrier), so one
@@ -424,6 +433,7 @@ def _check_updates():
                 images[img] = None
         results = {img: _image_update_status(img) for img in images}
         save_updates({"checked": time.time(), "images": results})
+        _check_release()  # piggyback the controller-release check (cached)
     finally:
         with _updates_lock:
             _updates_running = False
@@ -448,6 +458,247 @@ def mark_image_fresh(image):
     if image in data.get("images", {}):
         data["images"][image] = {"update": False, "error": None}
         save_updates(data)
+
+
+# =========================================================================
+# Controller self-upgrade
+# =========================================================================
+def _ver_key(v):
+    """Sortable key for a vX.Y.Z-ish version string ("" sorts lowest)."""
+    nums = re.findall(r"\d+", v or "")
+    return tuple(int(n) for n in nums[:3]) + (0,) * (3 - min(len(nums), 3))
+
+
+def load_release():
+    try:
+        with open(RELEASE_FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _check_release():
+    """Refresh the newest released version from the repo's git tags.
+
+    Best-effort: failures (offline, GitHub rate limit) leave the cache
+    untouched — the upgrade hint just doesn't appear."""
+    try:
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{RELEASE_REPO}/tags?per_page=100",
+            headers={"Accept": "application/vnd.github+json",
+                     "User-Agent": "tailarr-controller"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            tags = json.load(r)
+        versions = [t["name"].lstrip("v") for t in tags
+                    if isinstance(t, dict)
+                    and re.fullmatch(r"v\d+\.\d+\.\d+", t.get("name") or "")]
+        if not versions:
+            return None
+        latest = max(versions, key=_ver_key)
+        data = {"checked": time.time(), "latest": latest}
+        tmp = RELEASE_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, RELEASE_FILE)
+        return latest
+    except Exception as e:  # noqa: BLE001 — never let a version check bite
+        print(f"release check failed: {e}")
+        return None
+
+
+def _controller_name():
+    """The live controller container's name (its sidecar must exist too:
+    the replacement joins that sidecar's netns and health-checks through
+    it). None when podman is unavailable or no controller is visible."""
+    out = podman("ps", "--format", "{{.Names}}")
+    if out.returncode != 0:
+        return None
+    names = set(out.stdout.split())
+    for n in sorted(CONTROLLER_PODS):
+        if n in names and f"tailscale-{n}" in names:
+            return n
+    return None
+
+
+def _upgrade_last_result():
+    try:
+        with open(os.path.join(UPGRADE_DIR, "result.json")) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def upgrade_status():
+    """Everything the Settings upgrade card needs, from caches + one ps."""
+    latest = load_release().get("latest", "")
+    return {
+        "current": VERSION,
+        "latest": latest,
+        "available": bool(latest) and _ver_key(latest) > _ver_key(VERSION),
+        "checked": load_release().get("checked", 0),
+        "busy": UPGRADE_HELPER in running_names(),
+        "last": _upgrade_last_result(),
+    }
+
+
+def _render_redeploy_script(name, old_image, new_image, socket):
+    """The script the detached helper runs to swap the controller.
+
+    The controller cannot replace itself (`podman rm -f <self>` kills the
+    process issuing it), so this runs in a separate container. Ordering is
+    load-bearing: the new image is already pulled by the explicit version
+    tag BEFORE this script exists (GHCR's :latest manifest can lag a
+    release), and the old controller is only removed after that. On a
+    failed health check it rolls back to the old image. The sidecar is
+    never touched — tailnet identity and HTTPS survive the swap."""
+    pods_dir = PODS_DIR
+    log = f"{UPGRADE_DIR}/upgrade.log"
+    result = f"{UPGRADE_DIR}/result.json"
+    run_flags = (f"--network container:tailscale-{name} "
+                 f"-v {pods_dir}:{pods_dir} "
+                 f"-v {socket}:{socket} "
+                 f"-v /run/libpod:/run/libpod "
+                 f"-e CONTAINER_HOST=unix://{socket} "
+                 f"-e PODS_DIR={pods_dir} "
+                 f"--restart unless-stopped")
+    return f"""#!/bin/sh
+# Rendered by the Tailarr controller (self-upgrade). Runs detached in the
+# {UPGRADE_HELPER} container; the controller that wrote this dies mid-script.
+exec >> "{log}" 2>&1
+
+finish() {{
+    printf '{{"ok": %s, "from": "%s", "to": "%s", "rolled_back": %s, "finished": "%s"}}\\n' \\
+        "$1" "{old_image}" "{new_image}" "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "{result}"
+}}
+
+healthy() {{
+    i=0
+    while [ "$i" -lt 30 ]; do
+        if podman exec tailscale-{name} \\
+                wget -q -O /dev/null -T 3 http://127.0.0.1:{PORT}/api/info 2>/dev/null; then
+            return 0
+        fi
+        sleep 2
+        i=$((i + 1))
+    done
+    return 1
+}}
+
+echo "=== upgrade $(date -u +%Y-%m-%dT%H:%M:%SZ): {old_image} -> {new_image} ==="
+sleep 3  # let the controller flush its API response before it dies
+
+podman rm -f {name}
+podman run -d --name {name} {run_flags} {new_image}
+
+if healthy; then
+    # Refresh host-side boot artifacts shipped in the new image (the
+    # controller image carries start-pods.sh; /host-root is the host's
+    # /root). The systemd unit only ever points at this script, so
+    # refreshing the script is enough — no daemon-reload needed.
+    if [ -f /app/start-pods.sh ] && [ -d /host-root ]; then
+        cp /app/start-pods.sh /host-root/start-pods.sh \\
+            && chmod +x /host-root/start-pods.sh \\
+            && echo "refreshed /root/start-pods.sh from the new image"
+    fi
+    echo "upgrade OK"
+    finish true false
+    exit 0
+fi
+
+echo "new controller failed its health check - ROLLING BACK to {old_image}"
+podman rm -f {name}
+podman run -d --name {name} {run_flags} {old_image}
+finish false true
+exit 1
+"""
+
+
+def op_controller_upgrade(data):
+    """Swap the controller for a newer (or explicitly chosen) release.
+
+    Pull the explicit version tag first; hand the actual swap to a
+    detached helper container (this process dies with the old controller).
+    Returns immediately with status "upgrading" — the UI polls /api/info
+    until the version changes."""
+    name = _controller_name()
+    if not name:
+        return {"ok": False, "action": "upgrade", "status": "error",
+                "error": "No running controller (with its Tailscale sidecar) "
+                         "is visible via podman — is the socket mounted?",
+                "output": ""}
+    if UPGRADE_HELPER in running_names():
+        return {"ok": False, "action": "upgrade", "status": "busy",
+                "error": "An upgrade is already in progress.", "output": ""}
+
+    target = (data.get("version") or "").strip().lstrip("v")
+    if not target:
+        target = load_release().get("latest", "")
+    if not target:
+        return {"ok": False, "action": "upgrade", "status": "error",
+                "error": "No release known yet — use 'Check for updates' "
+                         "first, or pass an explicit version.", "output": ""}
+    if not re.fullmatch(r"\d+\.\d+\.\d+", target):
+        return {"ok": False, "action": "upgrade", "status": "error",
+                "error": f"'{target}' is not a release version (X.Y.Z).",
+                "output": ""}
+    if _ver_key(target) == _ver_key(VERSION):
+        return {"ok": False, "action": "upgrade", "status": "refused",
+                "error": f"Already running v{VERSION}.", "output": ""}
+
+    ins = podman("inspect", name, "--format", "{{.ImageName}}", timeout=30)
+    old_image = ins.stdout.strip() if ins.returncode == 0 else ""
+    if not old_image:
+        old_image = f"ghcr.io/scs32/tailarr:v{VERSION}"
+    # Keep the deployment's registry/repo (HOMEPOD_IMAGE overrides exist);
+    # only the tag moves. rsplit on ":" is safe: tags can't contain "/".
+    repo, _, tag = old_image.rpartition(":")
+    if not repo or "/" in tag:
+        repo = old_image
+    new_image = f"{repo}:v{target}"
+
+    # Pull by the explicit version tag BEFORE anything is removed (GHCR
+    # manifest lag: :latest — and briefly a brand-new tag — can serve stale
+    # right after a release; an explicit tag either exists or fails here,
+    # with the controller still intact).
+    pull = podman("pull", new_image, timeout=600)
+    if pull.returncode != 0:
+        return {"ok": False, "action": "upgrade", "status": "pull failed",
+                "error": f"Could not pull {new_image} — is v{target} released?",
+                "output": pull.stdout + pull.stderr}
+
+    socket = "/run/podman/podman.sock"
+    host = os.environ.get("CONTAINER_HOST", "")
+    if host.startswith("unix://"):
+        socket = host[len("unix://"):]
+
+    os.makedirs(UPGRADE_DIR, exist_ok=True)
+    script = os.path.join(UPGRADE_DIR, "redeploy.sh")
+    with open(script, "w") as f:
+        f.write(_render_redeploy_script(name, old_image, new_image, socket))
+    os.chmod(script, 0o755)
+
+    podman("rm", "-f", UPGRADE_HELPER, timeout=30)  # stale helper, if any
+    run = podman(
+        "run", "-d", "--rm", "--name", UPGRADE_HELPER,
+        "-v", f"{socket}:{socket}",
+        "-v", f"{PODS_DIR}:{PODS_DIR}",
+        "-v", "/root:/host-root",
+        "-e", f"CONTAINER_HOST=unix://{socket}",
+        "--entrypoint", "sh",
+        new_image, script, timeout=120,
+    )
+    if run.returncode != 0:
+        return {"ok": False, "action": "upgrade", "status": "error",
+                "error": "Could not launch the upgrade helper.",
+                "output": run.stdout + run.stderr}
+    return {"ok": True, "action": "upgrade", "status": "upgrading",
+            "error": None, "from": old_image, "to": new_image,
+            "output": f"Upgrade helper started: {old_image} -> {new_image}. "
+                      "The controller restarts in a few seconds; this page "
+                      "will reconnect."}
 
 
 # =========================================================================
@@ -1789,8 +2040,31 @@ def op_exec(name, cmd):
             "error": None, "output": output}
 
 
+def _run_rerender(name):
+    """Re-render one pod's scripts from its saved .config.json, then re-run
+    it. This is how engine updates (new run.sh templates) reach existing
+    pods — typically right after a controller upgrade. The pod's image,
+    volumes, environment and Tailscale identity are all unchanged; run.sh
+    recreates the containers, so expect a brief restart."""
+    info = pod_config(name)
+    if not info:
+        return {"ok": False, "name": name, "action": "rerender",
+                "status": "error", "output": "",
+                "error": "No .config.json for this pod."}
+    result = run_create(config_from_info(info))
+    if result.returncode != 0:
+        return {"ok": False, "name": name, "action": "rerender",
+                "status": "render failed", "error": "create.sh failed",
+                "output": result.stdout + result.stderr}
+    r = _run_action(name, "start")
+    r["action"] = "rerender"
+    r["output"] = result.stdout + result.stderr + r.get("output", "")
+    return r
+
+
 def op_fleet(action):
-    """stop / start / restart every deployed pod except the controller.
+    """stop / start / restart / rerender every deployed pod except the
+    controller.
 
     Claims all targets up front — so the whole fleet reads as busy in
     /api/pods while this request works through them sequentially — then
@@ -1798,7 +2072,7 @@ def op_fleet(action):
     request are skipped, not queued. The controller pod is never touched:
     stopping it (and the podhost VM around it) is a host-side operation.
     """
-    if action not in ("stop", "start", "restart"):
+    if action not in ("stop", "start", "restart", "rerender"):
         return {"ok": False, "action": action, "status": "error",
                 "error": "Unknown fleet action.", "results": [], "skipped": []}
     running = running_names()
@@ -1828,6 +2102,8 @@ def op_fleet(action):
                     if r["ok"]:
                         r = _run_action(name, "start")
                     r["action"] = "restart"
+                elif action == "rerender":
+                    r = _run_rerender(name)
                 else:
                     r = _run_action(name, action)
             except subprocess.TimeoutExpired as e:
@@ -2362,10 +2638,15 @@ def op_attach(pod, sname):
 # =========================================================================
 def api_get(path):
     if path == "/api/info":
+        latest = load_release().get("latest", "")
         return 200, {"pods_dir": PODS_DIR,
                      "controller_pods": sorted(CONTROLLER_PODS),
                      "version": VERSION,
+                     "upgrade_available": bool(latest)
+                     and _ver_key(latest) > _ver_key(VERSION),
                      "tsapi": status_tsapi()}
+    if path == "/api/controller/upgrade":
+        return 200, upgrade_status()
     if path == "/api/tsapi":
         return 200, status_tsapi()
     if path == "/api/pods":
@@ -2487,6 +2768,20 @@ def api_post(path, data):
     if path == "/api/fleet":
         result = op_fleet((data.get("do") or "").strip())
         return (200 if result["ok"] else 400), result
+
+    if path == "/api/controller/upgrade":
+        result = op_controller_upgrade(data)
+        code = 200 if result["ok"] else (409 if result.get("status") == "busy" else 400)
+        return code, result
+
+    if path == "/api/controller/upgrade/check":
+        latest = _check_release()  # synchronous, ~1 network call, 10s cap
+        status = upgrade_status()
+        status["ok"] = latest is not None
+        if latest is None:
+            status["error"] = ("Could not reach the release list "
+                               "(offline, or GitHub rate limit) — try later.")
+        return (200 if status["ok"] else 502), status
 
     if path == "/api/updates/refresh":
         return 200, {"ok": True, "status": maybe_check_updates(force=True)}

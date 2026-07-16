@@ -33,6 +33,19 @@ COPY catalogs/ /app/catalogs/
 COPY web/app.py web/kuma_client.py /app/web/
 COPY --from=ui /ui/dist /app/static
 
+# Ship the boot-recovery script so a controller self-upgrade can refresh the
+# host's /root/start-pods.sh. Its single source of truth is the heredoc in
+# bootstrap-tailarr.sh (which must stay curl-able standalone) — extract it
+# here rather than keeping a second copy that would drift. `test -s` +
+# shebang check make a marker rename fail the build, not ship an empty file.
+COPY bootstrap-tailarr.sh /tmp/bootstrap-tailarr.sh
+RUN sed -n '\|^cat > /root/start-pods.sh|,\|^STARTEOF$|p' /tmp/bootstrap-tailarr.sh \
+        | sed '1d;$d' > /app/start-pods.sh \
+    && test -s /app/start-pods.sh \
+    && head -1 /app/start-pods.sh | grep -q '^#!/bin/sh' \
+    && chmod +x /app/start-pods.sh \
+    && rm /tmp/bootstrap-tailarr.sh
+
 ENV APP_DIR=/app \
     PODS_DIR=/root/Pods \
     STATIC_DIR=/app/static \

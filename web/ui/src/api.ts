@@ -23,6 +23,8 @@ import type {
   TsApiProbe,
   TsApiStatus,
   UpdatesInfo,
+  UpgradeResult,
+  UpgradeStatus,
   UsersStatus,
 } from "./types";
 
@@ -76,6 +78,17 @@ export const api = {
 
   fleet: (action: FleetAction) =>
     postJSON<FleetResult>("/api/fleet", { do: action }),
+
+  upgradeStatus: () => getJSON<UpgradeStatus>("/api/controller/upgrade"),
+
+  upgradeCheck: () =>
+    postJSON<UpgradeStatus>("/api/controller/upgrade/check", {}),
+
+  upgrade: (version?: string) =>
+    postJSON<UpgradeResult>(
+      "/api/controller/upgrade",
+      version ? { version } : {},
+    ),
 
   podConfig: (name: string) =>
     getJSON<PodConfigResult>(`/api/pods/${name}/config`),

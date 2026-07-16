@@ -3,6 +3,7 @@ import type { TsApiStatus } from "../types";
 import { api } from "../api";
 import { Alert } from "../components/Alert";
 import { TsApiWizard } from "../components/TsApiWizard";
+import { UpgradeCard } from "../components/UpgradeCard";
 
 export function Settings() {
   const [status, setStatus] = useState<TsApiStatus | null>(null);
@@ -20,6 +21,11 @@ export function Settings() {
 
       <div style={{ maxWidth: 640 }}>
         <div className="section-title" style={{ marginTop: "var(--sp-5)" }}>
+          Controller
+        </div>
+        <UpgradeCard />
+
+        <div className="section-title" style={{ marginTop: "var(--sp-6)" }}>
           Tailscale API credential
         </div>
 

@@ -300,6 +300,134 @@ code, data = get("/api/catalog")
 check(not any(c["name"] == "extpod" for c in data["catalog"]),
       "source's services leave the catalog after the source is deleted")
 
+# --- controller self-upgrade (podman faked in-process) -------------------
+# The op must (a) pull the explicit new version tag BEFORE anything is
+# removed (GHCR manifest lag), (b) never rm the controller itself — the
+# swap belongs to the detached helper script, which must carry a rollback
+# path — and (c) refuse cleanly when there is nothing to do.
+import subprocess as _sp  # noqa: E402
+
+
+class FakePodman:
+    """Records every call; simulates a live controller + sidecar."""
+
+    def __init__(self):
+        self.calls = []
+        self.names = ["tailarr", "tailscale-tailarr"]
+
+    def __call__(self, *args, timeout=60):
+        self.calls.append(list(args))
+        if args[0] == "ps":
+            return _sp.CompletedProcess(args, 0, "\n".join(self.names) + "\n", "")
+        if args[0] == "inspect":
+            return _sp.CompletedProcess(args, 0, "ghcr.io/scs32/tailarr:v0.1.0\n", "")
+        return _sp.CompletedProcess(args, 0, "", "")
+
+
+_real_podman = app.podman
+_real_load_release = app.load_release
+fake = FakePodman()
+app.podman = fake
+# The daily update check piggybacks a real GitHub release lookup; pin the
+# cache empty so these assertions don't depend on the network or the repo.
+app.load_release = lambda: {}
+try:
+    code, data = get("/api/controller/upgrade")
+    check(code == 200 and data["current"] == app.VERSION
+          and data["available"] is False and data["busy"] is False,
+          "upgrade status: current version, nothing available without a check")
+
+    code, data = post("/api/controller/upgrade", {"version": app.VERSION})
+    check(code == 400 and data["status"] == "refused",
+          "upgrade to the running version refused")
+    code, data = post("/api/controller/upgrade", {"version": "not-a-version"})
+    check(code == 400 and "not a release version" in data["error"],
+          "malformed version rejected")
+    code, data = post("/api/controller/upgrade", {})
+    check(code == 400 and "No release known" in data["error"],
+          "upgrade without a known release refused (no silent :latest)")
+
+    fake.calls = []
+    code, data = post("/api/controller/upgrade", {"version": "9.9.9"})
+    check(code == 200 and data["ok"] and data["status"] == "upgrading"
+          and data["to"].endswith(":v9.9.9"),
+          "upgrade to an explicit version launches")
+    check(data["from"] == "ghcr.io/scs32/tailarr:v0.1.0"
+          and data["to"] == "ghcr.io/scs32/tailarr:v9.9.9",
+          "registry/repo kept from the running image; only the tag moves")
+    pulls = [i for i, c in enumerate(fake.calls) if c[0] == "pull"]
+    runs = [i for i, c in enumerate(fake.calls) if c[0] == "run"]
+    check(pulls and runs and pulls[0] < runs[0]
+          and fake.calls[pulls[0]][1] == "ghcr.io/scs32/tailarr:v9.9.9",
+          "explicit new tag pulled before the helper starts (manifest-lag safe)")
+    check(not any(c[:3] == ["rm", "-f", "tailarr"] for c in fake.calls),
+          "the controller never removes itself — the helper script does the swap")
+    helper = fake.calls[runs[0]]
+    check("--entrypoint" in helper and "/root:/host-root" in " ".join(helper)
+          and helper[helper.index("--entrypoint") + 2] == "ghcr.io/scs32/tailarr:v9.9.9",
+          "helper runs the NEW image with the host's /root mounted")
+
+    with open(os.path.join(pods, ".upgrade", "redeploy.sh")) as f:
+        script = f.read()
+    check("podman rm -f tailarr" in script
+          and "--network container:tailscale-tailarr" in script,
+          "redeploy script swaps the controller onto the existing sidecar")
+    check("wget -q -O /dev/null" in script and "tailscale-tailarr" in script,
+          "health check probes the API through the sidecar's netns")
+    check("ROLLING BACK" in script
+          and script.count("ghcr.io/scs32/tailarr:v0.1.0") >= 2,
+          "redeploy script carries a rollback to the old image")
+    check("start-pods.sh" in script and "/host-root" in script,
+          "redeploy script refreshes the host's start-pods.sh from the new image")
+
+    fake.names.append(app.UPGRADE_HELPER)
+    code, data = post("/api/controller/upgrade", {"version": "9.9.8"})
+    check(code == 409 and data["status"] == "busy",
+          "second upgrade refused while the helper is running")
+    code, data = get("/api/controller/upgrade")
+    check(data["busy"] is True, "upgrade status reports busy while helper runs")
+    fake.names.remove(app.UPGRADE_HELPER)
+
+    fake.names = ["some-other-pod"]
+    code, data = post("/api/controller/upgrade", {"version": "9.9.9"})
+    check(code == 400 and "No running controller" in data["error"],
+          "upgrade without a visible controller fails cleanly")
+finally:
+    app.podman = _real_podman
+    app.load_release = _real_load_release
+
+# --- fleet rerender (applies engine updates to existing pods) ------------
+# Needs a (stubbed) podman on PATH: rerender re-renders each pod's scripts
+# from its saved .config.json and then executes run.sh. Keep this last —
+# earlier tests rely on podman being absent.
+stub_bin = os.path.join(pods, "..", "stub-bin")
+os.makedirs(stub_bin, exist_ok=True)
+with open(os.path.join(stub_bin, "podman"), "w") as f:
+    # Same shape as the smoke-test stub: log every call; `ps` replays the
+    # names started so far, so run.sh's sidecar liveness check passes.
+    f.write(
+        '#!/bin/sh\n'
+        'LOG="${PODMAN_STUB_LOG:?}"\n'
+        'echo "podman $*" >> "$LOG"\n'
+        'case "${1:-}" in\n'
+        '  ps) grep -o "run -d --name [^ ]*" "$LOG" 2>/dev/null'
+        ' | awk \'{print $4}\' | sort -u ;;\n'
+        'esac\n'
+        'exit 0\n'
+    )
+os.chmod(os.path.join(stub_bin, "podman"), 0o755)
+os.environ["PODMAN_STUB_LOG"] = os.path.join(stub_bin, "podman.log")
+os.environ["PATH"] = stub_bin + os.pathsep + os.environ["PATH"]
+os.environ["WAIT"] = "0"  # run.sh startup pauses off, for test speed
+
+runsh = os.path.join(pods, "apitest", "run.sh")
+before = os.path.getmtime(runsh)
+code, data = post("/api/fleet", {"do": "rerender"})
+check(code == 200 and data["ok"] and data["results"]
+      and all(r["action"] == "rerender" and r["ok"] for r in data["results"]),
+      "fleet rerender re-renders and restarts every non-controller pod")
+check(os.path.getmtime(runsh) >= before, "rerender rewrote the pod's run.sh")
+
 catsrv.shutdown()
 srv.shutdown()
 print("WEB API TEST PASSED")

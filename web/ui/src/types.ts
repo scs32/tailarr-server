@@ -15,7 +15,7 @@ export type PodAction =
   | "restore"
   | "funnel";
 
-export type FleetAction = "stop" | "start" | "restart";
+export type FleetAction = "stop" | "start" | "restart" | "rerender";
 
 export interface Pod {
   name: string;
@@ -224,7 +224,39 @@ export interface Info {
   pods_dir: string;
   controller_pods: string[];
   version: string;
+  upgrade_available: boolean; // a newer controller release is known
   tsapi: TsApiStatus;
+}
+
+// GET /api/controller/upgrade — Settings upgrade card state.
+export interface UpgradeStatus {
+  current: string;
+  latest: string; // "" until a release check has succeeded
+  available: boolean;
+  checked: number; // epoch seconds of the last successful release check
+  busy: boolean; // an upgrade helper container is running right now
+  last: {
+    ok: boolean;
+    from: string;
+    to: string;
+    rolled_back: boolean;
+    finished: string;
+  } | null;
+  // POST /api/controller/upgrade/check additionally sets these:
+  ok?: boolean;
+  error?: string;
+}
+
+// POST /api/controller/upgrade — the swap is handed to a detached helper;
+// the controller restarts a few seconds after an ok response.
+export interface UpgradeResult {
+  ok: boolean;
+  action: string;
+  status: string;
+  error: string | null;
+  from?: string;
+  to?: string;
+  output: string;
 }
 
 export interface InstallResult {
