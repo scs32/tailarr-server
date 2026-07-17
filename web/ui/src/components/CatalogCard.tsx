@@ -1,4 +1,3 @@
-import { Link } from "react-router-dom";
 import type { CatalogItem } from "../types";
 import { PodGlyph } from "./Icons";
 
@@ -6,9 +5,11 @@ import { PodGlyph } from "./Icons";
 // stopped / red crashed) — see .catalog-card--* in the stylesheet.
 export function CatalogCard({
   item,
+  onInstall,
   onRemove,
 }: {
   item: CatalogItem;
+  onInstall: (name: string) => void;
   onRemove: (name: string) => void;
 }) {
   const stateClass = item.installed && item.state ? ` catalog-card--${item.state}` : "";
@@ -42,9 +43,12 @@ export function CatalogCard({
             Remove
           </button>
         ) : (
-          <Link className="btn btn--primary btn--sm" to={`/install/${item.name}`}>
+          <button
+            className="btn btn--primary btn--sm"
+            onClick={() => onInstall(item.name)}
+          >
             Install
-          </Link>
+          </button>
         )}
       </div>
       <div className="catalog-card__meta">{item.image}</div>

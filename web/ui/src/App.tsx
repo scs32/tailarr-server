@@ -2,7 +2,6 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Sidebar } from "./components/Shell";
 import { Dashboard } from "./pages/Dashboard";
 import { Catalog } from "./pages/Catalog";
-import { InstallForm } from "./pages/InstallForm";
 import { CustomPod } from "./pages/CustomPod";
 import { Shares } from "./pages/Shares";
 import { Network } from "./pages/Network";
@@ -18,7 +17,8 @@ function Layout() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/catalog" element={<Catalog />} />
-          <Route path="/install/:name" element={<InstallForm />} />
+          {/* deep-link: opens the catalog with the install popup for :name */}
+          <Route path="/install/:name" element={<Catalog />} />
           <Route path="/custom" element={<CustomPod />} />
           <Route path="/shares" element={<Shares />} />
           <Route path="/network" element={<Network />} />

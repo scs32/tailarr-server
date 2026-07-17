@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import type { BuiltinCatalog, CatalogItem, Source } from "../types";
 import { api } from "../api";
 import { CatalogCard } from "../components/CatalogCard";
+import { InstallModal } from "../components/InstallModal";
 import { SourcesPanel } from "../components/SourcesPanel";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Alert } from "../components/Alert";
@@ -10,6 +11,11 @@ import { FlashView, useFlash } from "../components/Flash";
 import { RefreshIcon, SearchIcon, SpinnerIcon } from "../components/Icons";
 
 export function Catalog() {
+  // /install/<name> deep-links (e.g. from the Monitor page) land here with
+  // the install popup already open.
+  const { name: installParam } = useParams();
+  const navigate = useNavigate();
+  const [installing, setInstalling] = useState<string | null>(installParam ?? null);
   const [catalog, setCatalog] = useState<CatalogItem[] | null>(null);
   const [sources, setSources] = useState<Source[]>([]);
   const [catalogs, setCatalogs] = useState<BuiltinCatalog[]>([]);
@@ -183,10 +189,22 @@ export function Catalog() {
             <CatalogCard
               key={`${item.source}/${item.name}`}
               item={item}
+              onInstall={setInstalling}
               onRemove={setRemoving}
             />
           ))}
         </div>
+      )}
+
+      {installing && (
+        <InstallModal
+          name={installing}
+          onClose={() => {
+            setInstalling(null);
+            if (installParam) navigate("/catalog", { replace: true });
+          }}
+          onChanged={load}
+        />
       )}
 
       {showSources && (

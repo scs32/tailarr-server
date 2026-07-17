@@ -46,10 +46,12 @@ export function InstallResultView({
   name,
   result,
   onReset,
+  embedded = false, // inside the install popup: the modal owns title + Close
 }: {
   name: string;
   result: InstallResult;
   onReset: () => void;
+  embedded?: boolean;
 }) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [output, setOutput] = useState<string | null>(null);
@@ -114,7 +116,7 @@ export function InstallResultView({
   if (!result.ok) {
     return (
       <>
-        <h1 className="page-title">Install {name}: failed</h1>
+        {!embedded && <h1 className="page-title">Install {name}: failed</h1>}
         <Alert kind="err">{result.error ?? "create.sh failed — see output below."}</Alert>
         {result.output && (
           <div className="log" style={{ marginTop: "var(--sp-4)", maxWidth: 720 }}>
@@ -125,9 +127,11 @@ export function InstallResultView({
           <button className="btn btn--secondary" onClick={onReset}>
             Back to form
           </button>
-          <Link className="btn btn--ghost" to="/catalog">
-            Catalog
-          </Link>
+          {!embedded && (
+            <Link className="btn btn--ghost" to="/catalog">
+              Catalog
+            </Link>
+          )}
         </div>
       </>
     );
@@ -138,7 +142,7 @@ export function InstallResultView({
 
   return (
     <>
-      <h1 className="page-title">Installed {name}</h1>
+      {!embedded && <h1 className="page-title">Installed {name}</h1>}
 
       {phase === "idle" && (
         <Alert kind="ok">
@@ -230,9 +234,11 @@ export function InstallResultView({
             Retry start
           </button>
         )}
-        <Link className="btn btn--ghost" to="/">
-          Dashboard
-        </Link>
+        {!embedded && (
+          <Link className="btn btn--ghost" to="/">
+            Dashboard
+          </Link>
+        )}
       </div>
     </>
   );
