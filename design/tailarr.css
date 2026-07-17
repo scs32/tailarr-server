@@ -13,7 +13,8 @@
   --surface-2:   #243349; /* raised / hover */
   --border:      #334155;
   --border-soft: #29384f;
-  --divider:     rgba(148, 163, 184, 0.12); /* hairline rules inside surfaces */
+  --divider:     rgba(148, 163, 184, 0.28); /* rules inside surfaces */
+  --well:        rgba(10, 18, 32, 0.45);    /* recessed panel behind section content */
   --edge-light:  rgba(226, 232, 240, 0.04); /* inset top edge on raised cards */
 
   /* ---- color: text ---- */
@@ -115,27 +116,35 @@ a:hover { text-decoration: underline; }
 .nav-item--active { background: var(--accent-tint); color: var(--accent); }
 .nav-icon { width: 18px; height: 18px; flex: none; opacity: .9; }
 
-/* Faint mesh backdrop — echoes the 3×3 mesh in the Tailarr mark */
+/* Mesh backdrop (echoes the 3×3 mesh in the Tailarr mark) + a cyan glow
+   behind the page header so the title zone reads tonally different */
 .main {
   padding: var(--sp-8); max-width: 1100px;
-  background-image: radial-gradient(rgba(148, 163, 184, 0.055) 1px, transparent 1px);
-  background-size: 26px 26px;
+  background-image:
+    radial-gradient(640px 240px at 18% 0%, rgba(34, 211, 238, 0.07), transparent 70%),
+    radial-gradient(rgba(148, 163, 184, 0.11) 1px, transparent 1px);
+  background-size: auto, 22px 22px;
+  background-repeat: no-repeat, repeat;
 }
 .page-title {
   font-family: var(--font-display);
   font-size: var(--fs-2xl); font-weight: 700; letter-spacing: -0.02em;
   margin: 0 0 var(--sp-2);
 }
-/* Section titles anchor to a fading hairline rule — the rule, not extra
-   margin, is what separates one block of the page from the next. */
+/* Section titles: a Signal Cyan tick anchors the label, and a fading rule
+   carries the eye across — sections separate by rule + air, not margin alone. */
 .section-title {
   display: flex; align-items: center; gap: var(--sp-3);
   font-size: var(--fs-sm); font-weight: var(--fw-bold); text-transform: uppercase;
-  letter-spacing: .08em; color: var(--muted); margin: var(--sp-8) 0 var(--sp-4);
+  letter-spacing: .08em; color: var(--muted); margin: var(--sp-12) 0 var(--sp-4);
+}
+.section-title::before {
+  content: ""; flex: none; width: 18px; height: 3px;
+  border-radius: 2px; background: var(--accent); opacity: .85;
 }
 .section-title::after {
   content: ""; flex: 1; height: 1px;
-  background: linear-gradient(90deg, var(--border-soft), transparent);
+  background: linear-gradient(90deg, var(--border), transparent);
 }
 /* Section title with right-aligned actions (dashboard, users, shares) —
    the title stretches so its rule fills the space up to the buttons. */
@@ -199,6 +208,14 @@ a:hover { text-decoration: underline; }
   box-shadow: inset 0 1px 0 var(--edge-light), var(--shadow);
 }
 
+/* Section content sits in a recessed well, so each block of the page reads
+   as a distinct panel rather than items floating on the backdrop. */
+.grid, .row-list {
+  background: var(--well);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-4);
+}
 .grid { display: grid; gap: var(--sp-5); grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
 
 .pod-card { padding: var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-4); transition: border-color .12s; }
@@ -224,6 +241,8 @@ a:hover { text-decoration: underline; }
 
 /* Compact row lists (shares, sources, network) */
 .row-list { display: flex; flex-direction: column; gap: var(--sp-3); }
+/* Inside a modal the well competes with the modal surface — flatten it */
+.modal .row-list { background: none; border: none; padding: 0; }
 .row { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-4); transition: border-color .12s; }
 .row.card:hover { border-color: var(--border); }
 .row__title { font-weight: var(--fw-medium); }
