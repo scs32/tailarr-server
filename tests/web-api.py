@@ -641,6 +641,132 @@ try:
 finally:
     app.op_controller_upgrade = _real_upgrade_op
 
+# --- "server" pseudo-service: grant the controller itself -----------------
+# tag:tailarr-can-server opens the network path to tag:tailarr-ctrl:443;
+# the API bearer tokens (next suite) are the permission boundary behind it.
+secs = app._managed_sections()
+check(any("tag:tailarr-can-server" in ln and "tag:tailarr-ctrl" in ln
+          for ln in secs["grants"]),
+      "managed grants include can-server -> tailarr-ctrl:443")
+check(any(ln.startswith('"tag:tailarr-can-server"')
+          for ln in secs["tagowners"]),
+      "managed tagOwners define tag:tailarr-can-server")
+check(app._sections_prefix_ok(secs),
+      "can-server content passes the tag prefix invariant")
+
+code, data = get("/api/users")
+check(code == 200 and "server" in data["services"],
+      "'server' is offered as a grantable service on the Users page")
+
+_real_ts_token3 = app._ts_token
+_real_ts_api3 = app.ts_api
+_tagwrite = {}
+
+
+def _fake_ts_access(method, path, body=None):
+    if method == "GET" and path.startswith("/device/"):
+        return 200, {"nodeId": "node1", "tags": ["tag:tailarr-user"]}
+    if method == "POST" and path.endswith("/tags"):
+        _tagwrite["tags"] = body["tags"]
+        return 200, {}
+    return 200, {"devices": []}
+
+
+app._ts_token = lambda: "dummy-test-token"
+app.ts_api = _fake_ts_access
+try:
+    code, data = post("/api/users/node1/access",
+                      {"service": "server", "allow": True})
+    check(code == 200 and data["ok"]
+          and "tag:tailarr-can-server" in _tagwrite["tags"],
+          "granting 'server' flips tag:tailarr-can-server on the device")
+    code, data = post("/api/users/node1/access",
+                      {"service": "no-such-svc", "allow": True})
+    check(code == 400 and not data["ok"],
+          "unknown services are still rejected")
+finally:
+    app._ts_token = _real_ts_token3
+    app.ts_api = _real_ts_api3
+
+# --- API bearer tokens: mint, require, gate, auto-relax -------------------
+
+
+def get_h(path, token=None):
+    hdrs = {"Authorization": "Bearer " + token} if token else {}
+    req = urllib.request.Request(BASE + path, headers=hdrs)
+    try:
+        with urllib.request.urlopen(req) as r:
+            return r.status, json.load(r)
+    except urllib.error.HTTPError as e:
+        return e.code, json.load(e)
+
+
+def post_h(path, body, token=None):
+    hdrs = {"Content-Type": "application/json"}
+    if token:
+        hdrs["Authorization"] = "Bearer " + token
+    req = urllib.request.Request(BASE + path, data=json.dumps(body).encode(),
+                                 headers=hdrs, method="POST")
+    try:
+        with urllib.request.urlopen(req) as r:
+            return r.status, json.load(r)
+    except urllib.error.HTTPError as e:
+        return e.code, json.load(e)
+
+
+code, data = get("/api/tokens")
+check(code == 200 and data["require"] is False and data["tokens"] == [],
+      "tokens start empty with require off (API open, historical model)")
+
+code, data = post("/api/tokens", {"do": "require", "enabled": True})
+check(code == 400 and "Create a token first" in data["error"],
+      "require with zero tokens is refused (would lock everyone out)")
+
+code, data = post("/api/tokens", {"do": "create", "label": "phone"})
+check(code == 200 and data["ok"] and data["token"].startswith("tailarr-tok-"),
+      "minting returns a tailarr-tok- secret")
+tok1 = data["token"]
+tokfile = os.path.join(pods, ".tokens.json")
+check(os.stat(tokfile).st_mode & 0o777 == 0o600,
+      "token registry is 0600")
+check(tok1 not in open(tokfile).read(),
+      "the plaintext secret is never stored (hash only)")
+
+code, data = get("/api/tokens")
+check(code == 200 and len(data["tokens"]) == 1
+      and data["tokens"][0]["label"] == "phone"
+      and "sha256" not in data["tokens"][0]
+      and "token" not in data["tokens"][0],
+      "token list carries label/id only, never secrets")
+
+code, data = post("/api/tokens", {"do": "require", "enabled": True})
+check(code == 200 and data["ok"], "require flips on once a token exists")
+
+code, data = get_h("/api/pods")
+check(code == 401, "tokenless GET is rejected once require is on")
+code, data = post_h("/api/tokens", {"do": "create", "label": "x"})
+check(code == 401, "tokenless POST is rejected once require is on")
+code, data = get_h("/api/pods", token="tailarr-tok-wrong")
+check(code == 401, "a wrong token is rejected")
+code, data = get_h("/api/pods", token=tok1)
+check(code == 200, "the minted token opens the API")
+code, data = get_h("/api/info")
+check(code == 200 and "version" in data,
+      "/api/info stays open (upgrade health gate + app compat probe)")
+
+code, data = post_h("/api/tokens", {"do": "create", "label": "second"},
+                    token=tok1)
+check(code == 200 and data["ok"], "an authed client can mint more tokens")
+tid2 = data["id"]
+code, data = post_h("/api/tokens", {"do": "delete", "id": tid2}, token=tok1)
+check(code == 200 and data["ok"], "token delete works")
+tid1 = get_h("/api/tokens", token=tok1)[1]["tokens"][0]["id"]
+code, data = post_h("/api/tokens", {"do": "delete", "id": tid1}, token=tok1)
+check(code == 200 and data["ok"], "the last token can delete itself")
+code, data = get("/api/tokens")
+check(code == 200 and data["require"] is False and data["tokens"] == [],
+      "deleting the last token auto-relaxes require (no lockout state)")
+
 catsrv.shutdown()
 srv.shutdown()
 print("WEB API TEST PASSED")

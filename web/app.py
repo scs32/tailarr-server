@@ -21,10 +21,12 @@ Expects (provided by the container image / bootstrap script):
 """
 
 import hashlib
+import hmac
 import json
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -36,7 +38,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.9.9"
+VERSION = "0.10.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -948,6 +950,10 @@ TSAPI_FILE = os.path.join(PODS_DIR, ".tsapi.json")
 USERS_FILE = os.path.join(PODS_DIR, ".users.json")
 TS_USER_TAG = "tag:tailarr-user"
 TS_CAN_PREFIX = "tag:tailarr-can-"
+# Pseudo-service granting the controller itself (the app's server module).
+# tag:tailarr-can-server's grant dst is tag:tailarr-ctrl, not a svc- tag;
+# the API's bearer-token auth is the real permission boundary behind it.
+SERVER_SERVICE = "server"
 
 
 _oauth_lock = threading.Lock()
@@ -1078,7 +1084,7 @@ def _shareable_services():
 
 def status_users():
     """User machines (tag:tailarr-user) + their capability badges."""
-    services = _shareable_services()
+    services = _shareable_services() + [SERVER_SERVICE]
     if not _ts_token():
         return {"configured": False, "error": None, "users": [],
                 "services": services}
@@ -1126,8 +1132,13 @@ def op_user_access(node_id, service, allow):
     nothing else), and the can- tag must exist in the tailnet policy's
     tagOwners (it does for every installed service once the fenced
     generator has run; errors from Tailscale are surfaced verbatim).
+
+    "server" is the controller itself (the app's server module): its badge
+    tag:tailarr-can-server grants network reach to tag:tailarr-ctrl:443.
+    Grant it together with an API token — the token is the permission
+    boundary; the tag only opens the pipe.
     """
-    if service not in _shareable_services():
+    if service not in _shareable_services() + [SERVER_SERVICE]:
         return {"ok": False, "id": node_id, "error": "Unknown service."}
     code, dev = ts_api("GET", f"/device/{node_id}")
     if code != 200:
@@ -1210,6 +1221,11 @@ def _managed_sections():
         # ingress range to public-tagged pods or Funnel silently drops.
         '{"src": ["fd7a:115c:a1e0:ab12::/64"], '
         '"dst": ["tag:tailarr-public"], "ip": ["*"]}, // funnel ingress',
+        # The controller as a grantable "service" (the Tailarr app's server
+        # module). Network reach only — the API's bearer-token auth is the
+        # actual permission boundary; see docs/acl-design.md addendum.
+        '{"src": ["tag:tailarr-can-server"], '
+        '"dst": ["tag:tailarr-ctrl"], "ip": ["443"]},',
     ]
     for s in svcs:
         grants.append(f'{{"src": ["tag:tailarr-can-{s}"], '
@@ -1220,7 +1236,7 @@ def _managed_sections():
     owners = ['"tag:tailarr-ctrl": ["autogroup:admin"],']
     owners += [f'"{t}": {OWN},'
                for t in ("tag:tailarr", "tag:tailarr-user",
-                         "tag:tailarr-public")]
+                         "tag:tailarr-public", "tag:tailarr-can-server")]
     for s in svcs:
         owners.append(f'"tag:tailarr-svc-{s}": {OWN},')
         owners.append(f'"tag:tailarr-can-{s}": {OWN},')
@@ -1511,6 +1527,98 @@ def _write_secret(path, content):
     with os.fdopen(fd, "w") as f:
         f.write(content)
     os.chmod(path, 0o600)  # a pre-existing file keeps 0600 too
+
+
+# =========================================================================
+# API bearer tokens — the permission boundary behind tag:tailarr-can-server.
+#
+# The web UI's historical security model is pure network reachability
+# (tailnet-only). Granting the controller to app users (the "server"
+# pseudo-service) opens that pipe to non-admin devices, so the API gains an
+# opt-in token gate: mint tokens on the Users/Settings page, then flip
+# "require" — from then on every /api/* request needs "Authorization:
+# Bearer <token>". Exempt: /api/info (self-upgrade health gate + the app's
+# pre-auth compatibility probe; it leaks nothing sensitive) and /metrics
+# (not under /api/, prometheus scrape). Secrets are stored as sha256
+# hashes; the plaintext is shown exactly once at mint time.
+# =========================================================================
+TOKENS_FILE = os.path.join(PODS_DIR, ".tokens.json")
+
+
+def load_tokens():
+    try:
+        with open(TOKENS_FILE) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {"require": False, "tokens": []}
+    if not isinstance(data, dict):
+        return {"require": False, "tokens": []}
+    return {"require": bool(data.get("require")),
+            "tokens": [t for t in data.get("tokens") or []
+                       if isinstance(t, dict)]}
+
+
+def save_tokens(reg):
+    _write_secret(TOKENS_FILE, json.dumps(reg, indent=2) + "\n")
+
+
+def status_tokens():
+    """Token list for the UI — ids/labels/timestamps only, never hashes."""
+    reg = load_tokens()
+    return {"require": reg["require"],
+            "tokens": [{"id": t.get("id", ""), "label": t.get("label", ""),
+                        "created": t.get("created", "")}
+                       for t in reg["tokens"]]}
+
+
+def op_token_create(label):
+    """Mint an API token. The plaintext is returned ONCE and never stored."""
+    label = (label or "").strip()[:60]
+    plain = "tailarr-tok-" + secrets.token_hex(24)
+    reg = load_tokens()
+    tid = secrets.token_hex(4)
+    reg["tokens"].append({
+        "id": tid, "label": label,
+        "sha256": hashlib.sha256(plain.encode()).hexdigest(),
+        "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+    save_tokens(reg)
+    return {"ok": True, "error": None, "id": tid, "token": plain}
+
+
+def op_token_delete(tid):
+    reg = load_tokens()
+    keep = [t for t in reg["tokens"] if t.get("id") != tid]
+    if len(keep) == len(reg["tokens"]):
+        return {"ok": False, "error": "No such token."}
+    reg["tokens"] = keep
+    if not keep and reg["require"]:
+        reg["require"] = False  # never leave the API requiring what nobody has
+    save_tokens(reg)
+    return {"ok": True, "error": None}
+
+
+def op_token_require(enabled):
+    reg = load_tokens()
+    if enabled and not reg["tokens"]:
+        return {"ok": False, "error": "Create a token first — requiring "
+                "auth with zero tokens would lock every client out, "
+                "including this UI."}
+    reg["require"] = bool(enabled)
+    save_tokens(reg)
+    return {"ok": True, "error": None}
+
+
+def token_auth_ok(header):
+    """Gate for /api/* requests: open until the operator flips require on,
+    then a valid Bearer token is mandatory."""
+    reg = load_tokens()
+    if not reg["require"]:
+        return True
+    if not header or not header.startswith("Bearer "):
+        return False
+    digest = hashlib.sha256(header[7:].strip().encode()).hexdigest()
+    return any(hmac.compare_digest(digest, t.get("sha256", ""))
+               for t in reg["tokens"])
 
 
 # =========================================================================
@@ -2915,6 +3023,8 @@ def api_get(path):
         return 200, status_monitor()
     if path == "/api/users":
         return 200, status_users()
+    if path == "/api/tokens":
+        return 200, status_tokens()
     if path == "/api/shares":
         return 200, {"shares": status_shares()}
     if path == "/api/sources":
@@ -3044,6 +3154,18 @@ def api_post(path, data):
 
     if path == "/api/users/keys":
         result = op_user_key()
+        return (200 if result["ok"] else 400), result
+
+    if path == "/api/tokens":
+        do = data.get("do") or ""
+        if do == "create":
+            result = op_token_create(data.get("label") or "")
+        elif do == "delete":
+            result = op_token_delete(data.get("id") or "")
+        elif do == "require":
+            result = op_token_require(bool(data.get("enabled")))
+        else:
+            result = {"ok": False, "error": f"unknown do '{do}'"}
         return (200 if result["ok"] else 400), result
 
     # --- credential wizard (Settings) ---
@@ -3211,6 +3333,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(render_metrics().encode(), 200,
                               "text/plain; version=0.0.4; charset=utf-8")
         if url.path.startswith("/api/"):
+            # /api/info stays open: the self-upgrade health gate and the
+            # app's pre-auth compatibility probe both depend on it.
+            if url.path != "/api/info" and \
+                    not token_auth_ok(self.headers.get("Authorization")):
+                return self._send_json(
+                    {"ok": False, "error": "authentication required"}, 401)
             try:
                 code, obj = api_get(url.path)
             except Exception as e:  # noqa: BLE001 — same contract as do_POST
@@ -3228,6 +3356,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.path.startswith("/api/"):
             return self._send_json({"error": "not found"}, 404)
+        if not token_auth_ok(self.headers.get("Authorization")):
+            return self._send_json(
+                {"ok": False, "error": "authentication required"}, 401)
         length = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(length)
         try:

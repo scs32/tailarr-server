@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.10.0 — share the server itself: can-server + API tokens (2026-07-19)
+
+The Tailarr app's server module made the controller a service every app
+user needs to reach — but the ACL design hard-refused to share it
+("admin device or nothing"), because a network grant to a no-auth API is
+full control of the fleet. This lifts that rule as a pair: a tag opens
+the pipe, a token authorizes it.
+
+- **"server" pseudo-service on the Users page**: granting it flips
+  `tag:tailarr-can-server` on the device — a fenced grant to
+  `tag:tailarr-ctrl:443`, same instant tag-flip share/revoke as any
+  service. The grant confirm spells out what it means.
+- **API bearer tokens** (Settings → API access): mint per-client tokens
+  (shown once, stored as sha256 in `Pods/.tokens.json` 0600), then flip
+  "require" — every `/api/*` request now needs
+  `Authorization: Bearer …`. `/api/info` stays open (self-upgrade health
+  gate, the app's pre-auth compat probe). No lockout states: require
+  refuses to enable with zero tokens, and deleting the last token
+  auto-relaxes it.
+- The web UI sends its own token from localStorage (paste or one-click
+  "Use in this browser" at mint time).
+- Tokens are all-or-nothing for now; scoped/read-only roles are the
+  natural next cut. See docs/acl-design.md §9.
+
 ## v0.9.9 — one-credential install (2026-07-19)
 
 The installer previously demanded a hand-made Tailscale auth key even

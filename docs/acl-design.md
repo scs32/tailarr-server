@@ -50,7 +50,7 @@ ownership rule (§4).
 | Tag | Lives on | Meaning |
 |---|---|---|
 | `tag:tailarr` | every sidecar | fleet membership → intercom grant |
-| `tag:tailarr-ctrl` | controller sidecar | never shareable (hard generator rule) |
+| `tag:tailarr-ctrl` | controller sidecar | shareable only as the `server` pseudo-service + API token (§9) |
 | `tag:tailarr-svc-<name>` | that service's sidecar | what this node **is** |
 | `tag:tailarr-user` | consumer machines | what this machine **is** (inventory; zero access by itself) |
 | `tag:tailarr-can-<name>` | consumer machines | what this machine **may reach** (capability badge) |
@@ -126,7 +126,9 @@ bug. Anything beyond that is layered on by the human, outside the fence.
   access to exactly nothing until a badge is added.
 - Consumer grants are port-443-only (`tailscale serve` fronts every service).
 - The controller gets NO `can-` tag ever; `tag:tailarr-ctrl` appears in no
-  consumer grant (generator hard-refuses).
+  consumer grant (generator hard-refuses). *Superseded by §9: the `server`
+  pseudo-service grants `tag:tailarr-can-server → tag:tailarr-ctrl:443`,
+  with API bearer tokens as the permission boundary behind it.*
 - Whether default-deny is in force is the tailnet owner's choice, outside
   the fence. Our section behaves identically under allow-all (inert labels)
   or default-deny (live policy); Tailarr's docs recommend default-deny and
@@ -288,3 +290,34 @@ block, ~20 unused tags) is disposable. The complete replacement:
    Users page, `tag:tailarr-public` from the Make-public button.
 4. Fenced-grant generator + ETag read-modify-write apply path.
 5. Only then: hand out the first `tag:tailarr-user` key.
+
+## 9. Addendum (2026-07-19): the controller as a grantable service
+
+§2's hard rule — "the controller gets NO `can-` tag ever" — assumed the
+only controller client is the operator's browser, and that a network grant
+to a no-auth web UI equals full admin of the fleet. The Tailarr app broke
+the first assumption: its server module makes the controller the hub every
+app user talks to, and "admin device or nothing" left no room between.
+
+The rule is lifted **as a pair** — the tag opens the pipe, a credential
+authorizes it:
+
+- **`tag:tailarr-can-server`** (pseudo-service `server` on the Users page)
+  grants `tag:tailarr-ctrl:443` like any other capability badge. Same
+  flip-a-tag share/revoke, same fenced grant, defined unconditionally in
+  the base tagOwners set (the controller always exists).
+- **API bearer tokens** (`Pods/.tokens.json`, sha256-only, minted under
+  Settings → API access) are the actual permission boundary. With
+  `require` on, every `/api/*` request needs `Authorization: Bearer …` —
+  401 otherwise. Exempt: `/api/info` (self-upgrade health gate through the
+  sidecar netns + the app's pre-auth compatibility probe) and `/metrics`
+  (outside `/api/`). Guardrails: `require` cannot be enabled with zero
+  tokens, and deleting the last token auto-relaxes it — no lockout state.
+- The intended grant flow is one gesture: badge the device with `server`
+  AND hand its user a minted token. The Users-page confirm dialog states
+  plainly that without required tokens the badge alone is full control.
+
+Still true from the original design: `tag:tailarr-ctrl` itself is never
+placed on a consumer device, and the token layer has no roles yet — a
+token is all-or-nothing. Scoped/read-only tokens are the obvious next cut
+if the app grows a family-facing dashboard.

@@ -175,7 +175,21 @@ export interface UsersStatus {
   configured: boolean; // API token present on the controller
   error: string | null;
   users: UserMachine[];
-  services: string[]; // shareable (non-controller) deployed services
+  // Grantable services: deployed non-controller pods plus the "server"
+  // pseudo-service (the controller itself, for the app's server module).
+  services: string[];
+}
+
+// GET /api/tokens — controller API bearer tokens (secrets never returned).
+export interface TokenEntry {
+  id: string;
+  label: string;
+  created: string;
+}
+
+export interface TokensStatus {
+  require: boolean; // when true, every /api/* call needs a Bearer token
+  tokens: TokenEntry[];
 }
 
 export interface ActionResult {

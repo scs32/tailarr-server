@@ -19,6 +19,7 @@ import type {
   Share,
   ShareResult,
   Source,
+  TokensStatus,
   TsApiCredential,
   TsApiProbe,
   TsApiStatus,
@@ -28,8 +29,37 @@ import type {
   UsersStatus,
 } from "./types";
 
+// When the controller has "require API tokens" on, every /api/* call needs
+// a Bearer token. This browser's copy lives in localStorage — paste/mint it
+// under Settings → API access.
+const TOKEN_KEY = "tailarr.apitoken";
+
+export function getStoredToken(): string {
+  try {
+    return localStorage.getItem(TOKEN_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function setStoredToken(token: string) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // private mode etc. — the header just won't persist across reloads
+  }
+}
+
+function authHeaders(): Record<string, string> {
+  const t = getStoredToken();
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
 async function getJSON<T>(path: string): Promise<T> {
-  const r = await fetch(path);
+  const r = await fetch(path, { headers: authHeaders() });
+  if (r.status === 401)
+    throw new Error("API tokens are required — add this browser's token under Settings → API access");
   if (!r.ok) throw new Error(`${path} -> ${r.status}`);
   return r.json() as Promise<T>;
 }
@@ -37,7 +67,7 @@ async function getJSON<T>(path: string): Promise<T> {
 async function postJSON<T>(path: string, body: unknown): Promise<T> {
   const r = await fetch(path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   });
   // The API returns a structured body on 4xx/5xx too; surface it to the caller.
@@ -121,6 +151,26 @@ export const api = {
       "/api/users/keys",
       {},
     ),
+
+  tokens: () => getJSON<TokensStatus>("/api/tokens"),
+
+  tokenCreate: (label: string) =>
+    postJSON<{ ok: boolean; error: string | null; id: string; token: string }>(
+      "/api/tokens",
+      { do: "create", label },
+    ),
+
+  tokenDelete: (id: string) =>
+    postJSON<{ ok: boolean; error: string | null }>("/api/tokens", {
+      do: "delete",
+      id,
+    }),
+
+  tokenRequire: (enabled: boolean) =>
+    postJSON<{ ok: boolean; error: string | null }>("/api/tokens", {
+      do: "require",
+      enabled,
+    }),
 
   tsapi: () => getJSON<TsApiStatus>("/api/tsapi"),
 
