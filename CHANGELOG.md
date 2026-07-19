@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.10.1 — OAuth client can self-assign tag:tailarr-ctrl (2026-07-19)
+
+First live run of the one-credential bootstrap on a fresh tailnet
+caught a real bug: the managed `tagOwners` gave `tag:tailarr-ctrl` to
+`autogroup:admin` only, but the OAuth client *acts as*
+`tag:tailarr-ctrl` and may only assign tags that tag owns — and a tag
+does not own itself implicitly. Result: everything worked EXCEPT the
+controller-start reconcile could never apply `tag:tailarr-ctrl` to the
+controller sidecar (`tags API: requested tags [tag:tailarr-ctrl] are
+invalid or not permitted`). Full-access static tokens masked the bug by
+acting as `autogroup:admin`.
+
+- The fence generator now emits
+  `"tag:tailarr-ctrl": ["autogroup:admin", "tag:tailarr-ctrl"]`
+  (self-owning); existing installs converge on their next policy sync.
+- README: the recommended install is now a **dedicated tailnet** — a
+  complete paste-ready Access Controls file (default-deny from day one,
+  admin grant outside the fence, self-owning ctrl stub inside), with the
+  splice-into-existing-tailnet path kept as the alternative.
+- Controller image sets `PYTHONUNBUFFERED=1` — `podman logs tailarr`
+  showed nothing until the stdout block buffer flushed.
+
 ## v0.10.0 — share the server itself: can-server + API tokens (2026-07-19)
 
 The Tailarr app's server module made the controller a service every app

@@ -651,6 +651,9 @@ check(any("tag:tailarr-can-server" in ln and "tag:tailarr-ctrl" in ln
 check(any(ln.startswith('"tag:tailarr-can-server"')
           for ln in secs["tagowners"]),
       "managed tagOwners define tag:tailarr-can-server")
+check(any(ln.startswith('"tag:tailarr-ctrl"') and '"tag:tailarr-ctrl"' in
+          ln[len('"tag:tailarr-ctrl"'):] for ln in secs["tagowners"]),
+      "tag:tailarr-ctrl owns itself (OAuth client can self-assign it)")
 check(app._sections_prefix_ok(secs),
       "can-server content passes the tag prefix invariant")
 

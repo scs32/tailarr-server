@@ -31,18 +31,57 @@ keys) and — for its ACL/tagging/sharing features — API access. **One
 OAuth client covers both**, because Tailarr mints its own auth keys
 through it. Set it up once:
 
-1. Add the controller tag to your
-   [tailnet policy](https://login.tailscale.com/admin/acls)'s
-   `tagOwners` (Tailscale requires a tag to exist before an OAuth
-   client can carry it). Paste it inside Tailarr's fence markers so the
-   bootstrap adopts the line instead of duplicating it:
+1. **Recommended: give Tailarr its own tailnet.** Create a fresh (free)
+   Tailscale account for your media empire, log your own devices into
+   it, and replace its ENTIRE
+   [Access Controls file](https://login.tailscale.com/admin/acls) with
+   the policy below. Because nothing else lives on the tailnet,
+   default-deny is safe from the first save: your admin-owned devices
+   reach everything, and every other device reaches exactly the
+   services you grant it on the Users page — nothing else.
+
    ```jsonc
-   "tagOwners": {
-       // >>> tailarr-managed:tagowners
-       "tag:tailarr-ctrl": ["autogroup:admin"],
-       // <<< tailarr-managed:tagowners
-   },
+   // Tailarr tailnet policy — the entire Access Controls file of a
+   // dedicated tailnet. Edit anything outside the fenced regions;
+   // never edit inside them (Tailarr regenerates their contents).
+   {
+       // Operator sovereignty: admin-owned devices reach everything,
+       // always. This line is yours — Tailarr never touches it.
+       "grants": [
+           {"src": ["autogroup:admin"], "dst": ["*"], "ip": ["*"]},
+
+           // >>> tailarr-managed:grants
+           // <<< tailarr-managed:grants
+       ],
+
+       "tagOwners": {
+           // >>> tailarr-managed:tagowners
+           // Self-ownership is REQUIRED: the OAuth client acts as
+           // tag:tailarr-ctrl and may only assign tags this tag owns —
+           // a tag does not own itself implicitly.
+           "tag:tailarr-ctrl": ["autogroup:admin", "tag:tailarr-ctrl"],
+           // <<< tailarr-managed:tagowners
+       },
+
+       "nodeAttrs": [
+           // >>> tailarr-managed:nodeattrs
+           // <<< tailarr-managed:nodeattrs
+       ],
+   }
    ```
+
+   *Sharing an existing tailnet instead?* Paste just the fenced
+   `tagOwners` block above into your policy's `tagOwners` section —
+   the bootstrap adopts the fence and adds the missing `grants` /
+   `nodeAttrs` fences itself. Your existing rules are untouched; note
+   that Tailarr's grants only ever *allow* `tag:tailarr*` traffic, so
+   under an allow-all policy they are inert labels until you move to
+   default-deny.
+
+   Either way, also enable **HTTPS Certificates** (DNS tab) — pod HTTPS
+   needs it, and it's the one thing the bootstrap can't switch on for
+   you.
+
 2. Create an [OAuth client](https://login.tailscale.com/admin/settings/oauth)
    with **write** access to **Auth Keys**, **Devices**, and
    **Policy File**, tagged **`tag:tailarr-ctrl`**.

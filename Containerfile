@@ -51,7 +51,8 @@ RUN sed -n '\|^cat > /root/start-pods.sh|,\|^STARTEOF$|p' /tmp/bootstrap-tailarr
 ENV APP_DIR=/app \
     PODS_DIR=/root/Pods \
     STATIC_DIR=/app/static \
-    PORT=8080
+    PORT=8080 \
+    PYTHONUNBUFFERED=1
 
 EXPOSE 8080
 CMD ["python3", "/app/web/app.py"]

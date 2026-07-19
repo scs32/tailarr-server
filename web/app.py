@@ -38,7 +38,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.10.0"
+VERSION = "0.10.1"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -1232,8 +1232,13 @@ def _managed_sections():
                       f'"dst": ["tag:tailarr-svc-{s}"], "ip": ["443"]}},')
     # tag:tailarr-ctrl co-owns every other tag so an OAuth client tagged
     # tag:tailarr-ctrl may assign them (device tagging + key minting).
+    # It must also own ITSELF: the client acts as tag:tailarr-ctrl, and a
+    # tag does not implicitly own itself — without the self-entry the
+    # controller-start reconcile can never apply tag:tailarr-ctrl to the
+    # controller sidecar (live-caught on a fresh tailnet, 2026-07-19; a
+    # full-access static token masks it by acting as autogroup:admin).
     OWN = '["autogroup:admin", "tag:tailarr-ctrl"]'
-    owners = ['"tag:tailarr-ctrl": ["autogroup:admin"],']
+    owners = [f'"tag:tailarr-ctrl": {OWN},']
     owners += [f'"{t}": {OWN},'
                for t in ("tag:tailarr", "tag:tailarr-user",
                          "tag:tailarr-public", "tag:tailarr-can-server")]

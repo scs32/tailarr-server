@@ -169,7 +169,7 @@ Managed tagOwners + nodeAttrs blocks:
     // ...human-owned tags untouched...
     // >>> TAILARR MANAGED
     "tag:tailarr":              ["autogroup:admin"],
-    "tag:tailarr-ctrl":         ["autogroup:admin"],
+    "tag:tailarr-ctrl":         ["autogroup:admin", "tag:tailarr-ctrl"], // self-own: OAuth client must assign its own tag
     "tag:tailarr-user":         ["autogroup:admin"],
     "tag:tailarr-public":       ["autogroup:admin"],
     "tag:tailarr-svc-sonarr":   ["autogroup:admin"],   // + per installed
@@ -252,7 +252,7 @@ block, ~20 unused tags) is disposable. The complete replacement:
         "tag:tailarr-admin": ["autogroup:admin"],
         // >>> TAILARR MANAGED
         "tag:tailarr":        ["autogroup:admin"],
-        "tag:tailarr-ctrl":   ["autogroup:admin"],
+        "tag:tailarr-ctrl":   ["autogroup:admin", "tag:tailarr-ctrl"],
         "tag:tailarr-user":   ["autogroup:admin"],
         "tag:tailarr-public": ["autogroup:admin"],
         // (+ svc-/can- pair per installed service)
