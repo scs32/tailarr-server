@@ -12,6 +12,10 @@ function ago(iso: string): string {
   return `${Math.floor(mins / 1440)}d ago`;
 }
 
+// NOT CURRENTLY MOUNTED: hidden from Settings (2026-07-19, Stephen's call)
+// until the token story is designed around the app instead of raw strings.
+// The backend (/api/tokens + the require gate) remains fully functional.
+//
 // API bearer tokens: the permission boundary behind granting "server" access
 // to user machines. Minting is free; flipping "require" is the switch that
 // closes the API — including for this browser, which is why the card keeps

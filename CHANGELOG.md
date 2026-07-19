@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.11.0 — OAuth-only install; simpler Settings (2026-07-19)
+
+Direction change from the field: Tailarr's model is a dedicated tailnet
+and one OAuth client, so the product now commits to it.
+
+- **Install requires the OAuth client.** `TS_AUTHKEY` and `TS_API_TOKEN`
+  are no longer install paths — `install.sh`/`bootstrap-tailarr.sh` take
+  `TS_API_CLIENT_ID` + `TS_API_CLIENT_SECRET` (re-runs on an enrolled
+  controller still need nothing). README trimmed to the one path.
+- **Settings simplified.** The API-tokens card is hidden for now (the
+  backend `/api/tokens` gate remains; the UI returns when the token
+  story is designed around the app). The credential card just says
+  "Configured."
+- **Server-grant warning is one line**: "Adding this gives full admin
+  rights to this device."
+
 ## v0.10.3 — plain-language copy (2026-07-19)
 
 Stephen read the token card and said "what the HECK does this mean."

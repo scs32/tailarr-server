@@ -9,15 +9,10 @@ can read.
 ## Quick start — web UI (recommended)
 
 On a Debian/Ubuntu host (a VM or container works great), with a
-[Tailscale OAuth client](#the-tailscale-credential) (preferred) or a
-plain [auth key](https://login.tailscale.com/admin/settings/keys):
+[Tailscale OAuth client](#the-tailscale-credential):
 
 ```sh
-# OAuth client — everything works from first boot (tagging, ACLs, key minting):
 TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr-server/main/install.sh)"
-
-# or minimal — plain auth key, configure the API credential later in Settings:
-TS_AUTHKEY=tskey-... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr-server/main/install.sh)"
 ```
 
 This installs podman, pulls the Tailarr controller image, and enrolls it
@@ -29,11 +24,11 @@ and install services from the catalog with a click.
 Tailarr needs two things from Tailscale: a way to enroll nodes (auth
 keys) and — for its ACL/tagging/sharing features — API access. **One
 OAuth client covers both**, because Tailarr mints its own auth keys
-through it. Set it up once:
+through it. It is the install credential. Set it up once:
 
-1. **Recommended: give Tailarr its own tailnet.** Create a fresh (free)
-   Tailscale account for your media empire, log your own devices into
-   it, and replace its ENTIRE
+1. **Give Tailarr its own tailnet.** Create a fresh (free) Tailscale
+   account for your media empire, log your own devices into it, and
+   replace its ENTIRE
    [Access Controls file](https://login.tailscale.com/admin/acls) with
    the policy below. Because nothing else lives on the tailnet,
    default-deny is safe from the first save: your admin-owned devices
@@ -90,11 +85,6 @@ through it. Set it up once:
    auth key, and saves the credential for the controller
    (`$PODS_DIR/.tsapi.json`, mode 600) — no Settings wizard needed.
 
-A static API access token (`TS_API_TOKEN=tskey-api-...`) works in place
-of the OAuth client, but it is full-access and expires within 90 days;
-the plain-auth-key path skips API features entirely until you configure
-a credential in Settings.
-
 ## Security model — read this
 
 **The web UI has no authentication.** Its security model is that it is
@@ -123,7 +113,7 @@ service's name. The service shares its network namespace via
 `--network container:`. `tailscale serve` terminates HTTPS on 443 with
 an automatic `ts.net` certificate. This is the whole product — there is
 no plain-HTTP or no-Tailscale mode: every pod is a tailnet device with
-HTTPS, so an auth key is required to install one.
+HTTPS, enrolled with a key Tailarr mints through your OAuth client.
 
 - **Per-service tailnet identity** — Tailscale ACLs work at the service
   level. Share Jellyfin with family without exposing the rest.
@@ -245,14 +235,14 @@ container run -d --name podhost \
 
 **3. Install Tailarr inside the guest.** Shell in, add `curl`, then run
 the normal one-liner with your
-[Tailscale auth key](https://login.tailscale.com/admin/settings/keys):
+[Tailscale OAuth client](#the-tailscale-credential):
 
 ```sh
 container exec -ti podhost bash
 # now inside the guest (exec starts at /, not a login shell):
 cd /root
 apt update && apt install -y curl
-TS_AUTHKEY=tskey-... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr-server/main/install.sh)"
+TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr-server/main/install.sh)"
 ```
 
 The engine scripts land in the directory you run the installer from

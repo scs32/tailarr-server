@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import type { TsApiStatus } from "../types";
 import { api } from "../api";
 import { Alert } from "../components/Alert";
-import { TokensCard } from "../components/TokensCard";
 import { TsApiWizard } from "../components/TsApiWizard";
 import { UpgradeCard } from "../components/UpgradeCard";
 
@@ -34,13 +33,7 @@ export function Settings() {
           <p style={{ color: "var(--muted)" }}>Loading…</p>
         ) : status.configured ? (
           <>
-            <Alert kind="ok">
-              Configured —{" "}
-              {status.mode === "oauth"
-                ? "scoped OAuth client (recommended)"
-                : "static API access token (expires after 90 days; consider a scoped OAuth client)"}
-              . Stored at <code>Pods/.tsapi.json</code>.
-            </Alert>
+            <Alert kind="ok">Configured.</Alert>
             {!replacing && (
               <div className="preview-row" style={{ marginTop: "var(--sp-3)" }}>
                 <button
@@ -71,11 +64,6 @@ export function Settings() {
             }}
           />
         )}
-
-        <div className="section-title" style={{ marginTop: "var(--sp-6)" }}>
-          API access tokens
-        </div>
-        <TokensCard />
       </div>
     </>
   );
