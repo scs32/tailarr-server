@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.9.9 — one-credential install (2026-07-19)
+
+The installer previously demanded a hand-made Tailscale auth key even
+though a configured API credential lets Tailarr mint its own keys — the
+auth key was only ever needed for the controller's first enrollment.
+
+- **Bootstrap accepts an OAuth client** (`TS_API_CLIENT_ID` +
+  `TS_API_CLIENT_SECRET`) or a static API token (`TS_API_TOKEN`) as an
+  alternative to `TS_AUTHKEY`. It seeds the controller's API credential
+  (`.tsapi.json`, mode 600), initializes the tailarr-managed policy
+  fences (policy-before-mint: a tag must be in `tagOwners` before a key
+  for it can be minted), then mints the controller's own single-use
+  `tag:tailarr` key — tagging, ACLs, and per-pod key minting work from
+  first boot with no Settings wizard.
+- The adopt/mint path runs the controller image's own code in a
+  one-shot container (the same `op_policy_init_fences` +
+  `ts_mint_pod_key` behind the Settings wizard) — no shell
+  reimplementation of policy splicing.
+- The container-MTU fix now runs before any container does (the
+  credential path talks TLS to api.tailscale.com from a container;
+  nested guests at MTU <1500 would blackhole it).
+- README documents the OAuth client setup: write scopes for Auth Keys /
+  Devices / Policy File, tagged `tag:tailarr-ctrl`, with the
+  `tagOwners` stub pasted inside the fence markers so adopt takes it
+  over instead of duplicating the key.
+- The plain `TS_AUTHKEY` path is unchanged.
+
 ## v0.9.3 — no more silent svc-tag failures (2026-07-16)
 
 Field report (HIGH): a freshly deployed service could be permanently

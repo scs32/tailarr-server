@@ -28,6 +28,8 @@ jobs:
         run: python3 tests/web-shares.py
       - name: Web API test (JSON API end-to-end over HTTP)
         run: python3 tests/web-api.py
+      - name: Bootstrap adopt/mint test (embedded heredoc vs app.py)
+        run: python3 tests/bootstrap-mint.py
 
   ui:
     runs-on: ubuntu-latest
