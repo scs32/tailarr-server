@@ -64,9 +64,9 @@ export function TokensCard() {
     if (
       enabled &&
       !window.confirm(
-        "Require a token on every API request? Anything without one — " +
-          "including this browser until its token below is set — gets a 401. " +
-          "The app's server module will need a token too.",
+        "Require a token to use Tailarr? Every app and browser will need " +
+          "one — including this browser (set its token below first) and " +
+          "the Tailarr app on your phone.",
       )
     )
       return;
@@ -95,17 +95,19 @@ export function TokensCard() {
             onChange={(e) => toggleRequire(e.target.checked)}
           />
           <span>
-            Require a token on every API request
+            Require a token to use Tailarr
             {status.tokens.length === 0 && !status.require && " (create a token first)"}
           </span>
         </label>
       )}
       <p className="field__hint" style={{ margin: "var(--sp-2) 0 0" }}>
-        Off: the API stays open to anything that can reach it (tailnet-only,
-        the historical model). On: every client — the Tailarr app, scripts,
-        this browser — must send its token. Grant a device the{" "}
-        <code>server</code> service on the Users page to open the network
-        path; its token is what actually authorizes it.
+        Tailarr has no login: anyone who can open this page can manage your
+        pods. That’s safe while only your own devices can reach it. Turn
+        this on and every app and browser must present a token instead —
+        like a password. Create one below and keep a copy in this browser
+        first, or this page locks you out too. Sharing “Tailarr Server”
+        with someone on the Users page only lets their device connect;
+        their token is what lets them in.
       </p>
 
       {status && status.tokens.length > 0 && (

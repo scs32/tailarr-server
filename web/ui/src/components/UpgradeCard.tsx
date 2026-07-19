@@ -142,9 +142,10 @@ export function UpgradeCard() {
       {phase === "done" && (
         <>
           <Alert kind="ok">
-            Upgraded to <strong>v{newVersion}</strong>. Existing pods still
-            run scripts rendered by the old engine — re-render the fleet to
-            apply engine updates (each pod restarts briefly).
+            Upgraded to <strong>v{newVersion}</strong>. One step left: your
+            pods are still running with the previous version’s settings —
+            finish the upgrade to bring them along (each pod restarts
+            briefly).
           </Alert>
           {rerender === null ? (
             <div className="preview-row" style={{ marginTop: "var(--sp-3)" }}>
@@ -156,14 +157,14 @@ export function UpgradeCard() {
                 disabled={rerenderBusy}
                 onClick={applyEngineUpdates}
               >
-                Apply engine updates to all pods
+                Finish upgrade
               </button>
             </div>
           ) : (
             <Alert kind={rerender.ok ? "ok" : "err"}>
               {rerender.ok
-                ? `Re-rendered ${rerender.results.length} pod(s).`
-                : rerender.error || "Some pods failed to re-render."}
+                ? `Updated ${rerender.results.length} pod(s). Upgrade complete.`
+                : rerender.error || "Some pods couldn't be updated."}
             </Alert>
           )}
         </>

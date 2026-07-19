@@ -92,10 +92,10 @@ export function Users() {
       service === "server" &&
       allow &&
       !window.confirm(
-        "Grant this machine access to the Tailarr server itself?\n\n" +
-          "It will reach this web UI and API. Unless API tokens are set " +
-          "to required (Settings → API access), that means full control " +
-          "of every pod. Grant it together with an API token.",
+        "Let this machine connect to Tailarr itself?\n\n" +
+          "It will be able to open this website. Unless you require " +
+          "tokens (Settings → API access), that means full control of " +
+          "every pod — so give its owner a token and turn “require” on.",
       )
     )
       return;

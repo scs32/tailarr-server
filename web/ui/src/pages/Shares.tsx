@@ -129,7 +129,7 @@ export function Shares() {
               </span>
               <span className="preview-label">
                 {s.used_by.length ? `used by ${s.used_by.join(", ")}` : "unused"}
-                {s.visible ? "" : " · not visible"}
+                {s.visible ? "" : " · folder not found on host"}
               </span>
               <button className="btn btn--ghost btn--sm" onClick={() => openNfs(s)}>
                 NFS…

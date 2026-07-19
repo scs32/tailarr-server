@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.10.3 — plain-language copy (2026-07-19)
+
+Stephen read the token card and said "what the HECK does this mean."
+He was right. UI-only release:
+
+- Tokens card: explains the no-login model in plain words ("like a
+  password", "this page locks you out too") instead of "the historical
+  model" / "network path" / "authorizes".
+- Post-upgrade step 2 is no longer "Apply engine updates to all pods"
+  (infrastructure-speak): the alert says your pods still run the
+  previous version's settings, the button says "Finish upgrade", the
+  result says "Updated N pod(s). Upgrade complete."
+- Server-grant confirm and require-token confirm rewritten in the same
+  voice; Shares "not visible" → "folder not found on host".
+
 ## v0.10.2 — policy sync on controller start (2026-07-19)
 
 Second live-caught gap of the day: releases can ADD managed tags and
