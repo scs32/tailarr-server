@@ -59,7 +59,7 @@ function authHeaders(): Record<string, string> {
 async function getJSON<T>(path: string): Promise<T> {
   const r = await fetch(path, { headers: authHeaders() });
   if (r.status === 401)
-    throw new Error("API tokens are required — add this browser's token under Settings → API access");
+    throw new Error("This Tailarr requires an API token.");
   if (!r.ok) throw new Error(`${path} -> ${r.status}`);
   return r.json() as Promise<T>;
 }

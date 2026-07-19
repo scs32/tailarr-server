@@ -85,23 +85,21 @@ done
 # Make all scripts executable
 chmod +x *.sh
 
-# The web controller is the only interface: enrolling it as its own tailnet
-# node needs ONE Tailscale credential — an OAuth client (preferred: also
-# unlocks tagging/ACLs/key minting from first boot), a static API token, or
-# a plain auth key.
-if [[ -z "${TS_AUTHKEY:-}" && -z "${TS_API_TOKEN:-}" ]] \
-   && [[ -z "${TS_API_CLIENT_ID:-}" || -z "${TS_API_CLIENT_SECRET:-}" ]]; then
-    echo "[ERROR] A Tailscale credential is required. Either:"
+# The web controller is the only interface: it enrolls as its own tailnet
+# node and manages the tailnet through ONE Tailscale OAuth client (see the
+# README's "Tailscale credential" section — dedicated tailnet, client
+# tagged tag:tailarr-ctrl with auth_keys/devices/policy_file write scopes).
+if [[ -z "${TS_API_CLIENT_ID:-}" || -z "${TS_API_CLIENT_SECRET:-}" ]]; then
+    echo "[ERROR] A Tailscale OAuth client is required:"
     echo ""
-    echo "  An OAuth client (preferred — see the README's 'Tailscale credential' section):"
     echo "  TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... bash -c \"\$(curl -fsSL $REPO_BASE_URL/install.sh)\""
     echo ""
-    echo "  Or a plain auth key (https://login.tailscale.com/admin/settings/keys):"
-    echo "  TS_AUTHKEY=tskey-... bash -c \"\$(curl -fsSL $REPO_BASE_URL/install.sh)\""
+    echo "Create it per the README's 'Tailscale credential' section (paste the"
+    echo "tailnet policy, then generate the client at"
+    echo "https://login.tailscale.com/admin/settings/oauth)."
     exit 1
 fi
 
 echo "[START] Bootstrapping the Tailarr controller..."
-TS_AUTHKEY="${TS_AUTHKEY:-}" TS_API_TOKEN="${TS_API_TOKEN:-}" \
-TS_API_CLIENT_ID="${TS_API_CLIENT_ID:-}" TS_API_CLIENT_SECRET="${TS_API_CLIENT_SECRET:-}" \
+TS_API_CLIENT_ID="$TS_API_CLIENT_ID" TS_API_CLIENT_SECRET="$TS_API_CLIENT_SECRET" \
 ./bootstrap-tailarr.sh

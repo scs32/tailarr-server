@@ -85,18 +85,11 @@ export function Users() {
   }, [refresh]);
 
   async function toggle(id: string, service: string, allow: boolean) {
-    // "server" is the controller itself — network reach to this UI and API.
-    // Without required API tokens (Settings) that is full control of every
-    // pod, so make the grant an explicit, informed choice.
+    // "server" is the controller itself — one plain-words warning.
     if (
       service === "server" &&
       allow &&
-      !window.confirm(
-        "Let this machine connect to Tailarr itself?\n\n" +
-          "It will be able to open this website. Unless you require " +
-          "tokens (Settings → API access), that means full control of " +
-          "every pod — so give its owner a token and turn “require” on.",
-      )
+      !window.confirm("Adding this gives full admin rights to this device.")
     )
       return;
     setBusyKey(`${id}:${service}`);
