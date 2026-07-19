@@ -2,9 +2,18 @@
 # Bootstrap the Tailarr controller: a Tailscale sidecar plus the controller
 # web UI sharing its network namespace - deployed exactly like any other pod.
 #
-# Usage:
-#   TS_AUTHKEY=tskey-... ./bootstrap-tailarr.sh          (preferred: env var)
-#   ./bootstrap-tailarr.sh tskey-...                     (or as an argument)
+# Usage — one credential, either kind:
+#   TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... ./bootstrap-tailarr.sh
+#       (preferred: a Tailscale OAuth client tagged tag:tailarr-ctrl with
+#       auth_keys/devices/policy_file write scopes. The bootstrap mints its
+#       own auth key AND seeds the controller's API credential, so tagging,
+#       ACLs, and per-pod key minting work from first boot — no Settings
+#       wizard needed.)
+#   TS_API_TOKEN=tskey-api-... ./bootstrap-tailarr.sh    (static API token:
+#       same as above, but full-access and expires in <=90 days)
+#   TS_AUTHKEY=tskey-... ./bootstrap-tailarr.sh          (minimal: enroll
+#       only; configure the API credential later under Settings)
+#   ./bootstrap-tailarr.sh tskey-...                     (auth key as arg)
 #   ./bootstrap-tailarr.sh                               (reuse existing state/key)
 #
 # The web UI is then at http://tailarr.<your-tailnet>.ts.net:8080
@@ -15,33 +24,128 @@ PODS_DIR="${PODS_DIR:-$HOME/Pods}"
 # fresh install right after a release can't catch a stale :latest manifest
 # from GHCR. CI enforces that this matches web/app.py's VERSION; bump both
 # when cutting a release. HOMEPOD_IMAGE still overrides everything.
-TAILARR_VERSION="0.9.8"
+TAILARR_VERSION="0.9.9"
 IMAGE="${HOMEPOD_IMAGE:-ghcr.io/scs32/tailarr:v${TAILARR_VERSION}}"
 TS_IMAGE="docker.io/tailscale/tailscale:stable"
 SOCKET="/run/podman/podman.sock"
 KEY_FILE="$PODS_DIR/tailarr/.tailscale_authkey"
+TSAPI_FILE="$PODS_DIR/.tsapi.json"
 
 command -v podman >/dev/null || { echo "Error: podman is required" >&2; exit 1; }
 
-# --- auth key: env var, argument, or existing key file / state ---
-key="${TS_AUTHKEY:-${1:-}}"
-if [[ -n "$key" ]]; then
-    mkdir -p "$(dirname "$KEY_FILE")"
-    printf '%s\n' "$key" > "$KEY_FILE"
-    chmod 600 "$KEY_FILE"
-elif [[ ! -f "$KEY_FILE" && ! -f "$PODS_DIR/tailarr/tailscale/tailscaled.state" ]]; then
-    echo "Error: no auth key given and no existing state." >&2
-    echo "Usage: TS_AUTHKEY=tskey-... $0" >&2
-    exit 1
-fi
-
 # --- container network MTU (nested VMs, e.g. apple/container guests, have
-# MTU 1280; containers defaulting to larger MTUs silently blackhole TLS) ---
+# MTU 1280; containers defaulting to larger MTUs silently blackhole TLS).
+# Must precede the credential block below: the API-credential path runs a
+# one-shot container that talks TLS to api.tailscale.com. ---
 iface=$(awk '$2=="00000000" {print $1; exit}' /proc/net/route 2>/dev/null || true)
 host_mtu=$(cat "/sys/class/net/${iface:-eth0}/mtu" 2>/dev/null || echo 1500)
 if [[ "$host_mtu" -lt 1500 ]] && ! grep -qs "network_cmd_options" /etc/containers/containers.conf 2>/dev/null; then
     echo "Host MTU is $host_mtu - matching container network MTU..."
     printf '[engine]\nnetwork_cmd_options=["mtu=%s"]\n' "$host_mtu" >> /etc/containers/containers.conf
+fi
+
+# --- credentials -----------------------------------------------------------
+# Two ways in. An API credential (OAuth client or static token) is saved as
+# the controller's .tsapi.json and used to mint the controller's own auth
+# key — after initializing the tailarr-managed policy fences, because
+# Tailscale refuses to mint a key for a tag that isn't in tagOwners yet
+# (policy-before-mint). A plain TS_AUTHKEY skips all of that and enrolls
+# directly; the API credential can then be configured later in Settings.
+key="${TS_AUTHKEY:-${1:-}}"
+
+if [[ -n "${TS_API_CLIENT_ID:-}" && -n "${TS_API_CLIENT_SECRET:-}" ]]; then
+    mkdir -p "$PODS_DIR"
+    (umask 077; printf '{\n  "oauth_client_id": "%s",\n  "oauth_client_secret": "%s"\n}\n' \
+        "$TS_API_CLIENT_ID" "$TS_API_CLIENT_SECRET" > "$TSAPI_FILE")
+    chmod 600 "$TSAPI_FILE"
+    echo "Saved Tailscale API credential (OAuth client) to $TSAPI_FILE"
+elif [[ -n "${TS_API_TOKEN:-}" ]]; then
+    mkdir -p "$PODS_DIR"
+    (umask 077; printf '{\n  "token": "%s"\n}\n' "$TS_API_TOKEN" > "$TSAPI_FILE")
+    chmod 600 "$TSAPI_FILE"
+    echo "Saved Tailscale API credential (static token) to $TSAPI_FILE"
+fi
+
+# Adopt the policy fences (and optionally mint the controller's auth key)
+# by running the controller's own code in a one-shot container — the exact
+# adopt/mint path the Settings wizard uses, not a shell reimplementation.
+# Prints one JSON object: {"ok": bool, "error": str|null, "key": str}.
+run_tsapi_bootstrap() {
+    podman run --rm -i \
+      -v "$PODS_DIR:$PODS_DIR" \
+      -e PODS_DIR="$PODS_DIR" \
+      -e MINT_KEY="${1:-}" \
+      "$IMAGE" python3 - <<'PYEOF'
+import json, os, sys
+sys.path.insert(0, "/app/web")
+import app
+
+def fail(msg):
+    print(json.dumps({"ok": False, "error": msg, "key": ""}))
+    sys.exit(0)
+
+if not app._ts_token():
+    fail("could not obtain an API access token - check the OAuth client "
+         "id/secret (or token) and that the client has auth_keys, devices, "
+         "and policy_file write scopes")
+r = app.op_policy_init_fences()
+if not r["ok"]:
+    fail("policy adopt: %s" % r["error"])
+out = {"ok": True, "error": None, "key": ""}
+if os.environ.get("MINT_KEY") == "mint":
+    m = app.ts_mint_pod_key("tailarr")
+    if not m["ok"]:
+        fail("key mint: %s" % m["error"])
+    out["key"] = m["key"]
+print(json.dumps(out))
+PYEOF
+}
+
+json_field() {  # json_field <field> <<<"$json"
+    sed -n 's/.*"'"$1"'": *"\([^"]*\)".*/\1/p'
+}
+
+adopted=""
+if [[ -n "$key" ]]; then
+    mkdir -p "$(dirname "$KEY_FILE")"
+    printf '%s\n' "$key" > "$KEY_FILE"
+    chmod 600 "$KEY_FILE"
+elif [[ ! -f "$KEY_FILE" && ! -f "$PODS_DIR/tailarr/tailscale/tailscaled.state" ]]; then
+    if [[ -f "$TSAPI_FILE" ]]; then
+        echo "Initializing tailnet policy and minting the controller's auth key..."
+        out=$(run_tsapi_bootstrap mint) || true
+        if ! grep -q '"ok": true' <<<"$out"; then
+            err=$(json_field error <<<"$out")
+            echo "Error: bootstrap via the API credential failed: ${err:-no response}" >&2
+            echo "Fix the credential/policy, or pass an auth key instead: TS_AUTHKEY=tskey-... $0" >&2
+            exit 1
+        fi
+        mkey=$(json_field key <<<"$out")
+        [[ -n "$mkey" ]] || { echo "Error: minted key came back empty" >&2; exit 1; }
+        mkdir -p "$(dirname "$KEY_FILE")"
+        (umask 077; printf '%s\n' "$mkey" > "$KEY_FILE")
+        chmod 600 "$KEY_FILE"
+        echo "Policy fences in place; controller auth key minted (single-use, tag:tailarr)."
+        adopted=1
+    else
+        echo "Error: no credential given and no existing state." >&2
+        echo "Usage: TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... $0   (OAuth client, preferred)" >&2
+        echo "       TS_AUTHKEY=tskey-... $0                            (plain auth key)" >&2
+        exit 1
+    fi
+fi
+
+# API credential provided this run but the mint path (which adopts as a
+# side effect) didn't run — e.g. alongside an auth key, or re-bootstrap of
+# an enrolled controller. Still make sure the policy fences exist
+# (idempotent). Non-fatal: the Settings wizard can redo this any time.
+if [[ -z "$adopted" && ( -n "${TS_API_CLIENT_ID:-}" || -n "${TS_API_TOKEN:-}" ) ]]; then
+    echo "Checking tailnet policy fences..."
+    out=$(run_tsapi_bootstrap "") || true
+    if ! grep -q '"ok": true' <<<"$out"; then
+        echo "Warning: policy fence init failed: $(json_field error <<<"$out")" >&2
+        echo "         (continuing - re-run from Settings once the controller is up)" >&2
+    fi
 fi
 
 # --- podman API socket (the controller drives the host through it) ---

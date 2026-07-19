@@ -9,15 +9,52 @@ can read.
 ## Quick start — web UI (recommended)
 
 On a Debian/Ubuntu host (a VM or container works great), with a
-[Tailscale auth key](https://login.tailscale.com/admin/settings/keys):
+[Tailscale OAuth client](#the-tailscale-credential) (preferred) or a
+plain [auth key](https://login.tailscale.com/admin/settings/keys):
 
 ```sh
+# OAuth client — everything works from first boot (tagging, ACLs, key minting):
+TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr-server/main/install.sh)"
+
+# or minimal — plain auth key, configure the API credential later in Settings:
 TS_AUTHKEY=tskey-... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr-server/main/install.sh)"
 ```
 
 This installs podman, pulls the Tailarr controller image, and enrolls it
 on your tailnet. Then open **`https://tailarr.<your-tailnet>.ts.net`**
 and install services from the catalog with a click.
+
+### The Tailscale credential
+
+Tailarr needs two things from Tailscale: a way to enroll nodes (auth
+keys) and — for its ACL/tagging/sharing features — API access. **One
+OAuth client covers both**, because Tailarr mints its own auth keys
+through it. Set it up once:
+
+1. Add the controller tag to your
+   [tailnet policy](https://login.tailscale.com/admin/acls)'s
+   `tagOwners` (Tailscale requires a tag to exist before an OAuth
+   client can carry it). Paste it inside Tailarr's fence markers so the
+   bootstrap adopts the line instead of duplicating it:
+   ```jsonc
+   "tagOwners": {
+       // >>> tailarr-managed:tagowners
+       "tag:tailarr-ctrl": ["autogroup:admin"],
+       // <<< tailarr-managed:tagowners
+   },
+   ```
+2. Create an [OAuth client](https://login.tailscale.com/admin/settings/oauth)
+   with **write** access to **Auth Keys**, **Devices**, and
+   **Policy File**, tagged **`tag:tailarr-ctrl`**.
+3. Run the installer with its id + secret (above). The bootstrap
+   fills in the tailarr-managed policy sections, mints the controller's
+   auth key, and saves the credential for the controller
+   (`$PODS_DIR/.tsapi.json`, mode 600) — no Settings wizard needed.
+
+A static API access token (`TS_API_TOKEN=tskey-api-...`) works in place
+of the OAuth client, but it is full-access and expires within 90 days;
+the plain-auth-key path skips API features entirely until you configure
+a credential in Settings.
 
 ## Security model — read this
 

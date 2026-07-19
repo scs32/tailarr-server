@@ -85,15 +85,23 @@ done
 # Make all scripts executable
 chmod +x *.sh
 
-# The web controller is the only interface: an auth key is required to
-# enroll the controller as its own tailnet node.
-if [[ -z "${TS_AUTHKEY:-}" ]]; then
-    echo "[ERROR] TS_AUTHKEY is required."
+# The web controller is the only interface: enrolling it as its own tailnet
+# node needs ONE Tailscale credential — an OAuth client (preferred: also
+# unlocks tagging/ACLs/key minting from first boot), a static API token, or
+# a plain auth key.
+if [[ -z "${TS_AUTHKEY:-}" && -z "${TS_API_TOKEN:-}" ]] \
+   && [[ -z "${TS_API_CLIENT_ID:-}" || -z "${TS_API_CLIENT_SECRET:-}" ]]; then
+    echo "[ERROR] A Tailscale credential is required. Either:"
     echo ""
-    echo "Create a Tailscale auth key (reusable recommended) and run:"
+    echo "  An OAuth client (preferred — see the README's 'Tailscale credential' section):"
+    echo "  TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... bash -c \"\$(curl -fsSL $REPO_BASE_URL/install.sh)\""
+    echo ""
+    echo "  Or a plain auth key (https://login.tailscale.com/admin/settings/keys):"
     echo "  TS_AUTHKEY=tskey-... bash -c \"\$(curl -fsSL $REPO_BASE_URL/install.sh)\""
     exit 1
 fi
 
 echo "[START] Bootstrapping the Tailarr controller..."
-TS_AUTHKEY="$TS_AUTHKEY" ./bootstrap-tailarr.sh
+TS_AUTHKEY="${TS_AUTHKEY:-}" TS_API_TOKEN="${TS_API_TOKEN:-}" \
+TS_API_CLIENT_ID="${TS_API_CLIENT_ID:-}" TS_API_CLIENT_SECRET="${TS_API_CLIENT_SECRET:-}" \
+./bootstrap-tailarr.sh
