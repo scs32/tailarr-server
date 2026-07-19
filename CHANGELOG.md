@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.10.2 — policy sync on controller start (2026-07-19)
+
+Second live-caught gap of the day: releases can ADD managed tags and
+grants (v0.10.0's `can-server`), but the policy fences only synced on
+mutating actions (installs, share changes, adopt). An upgraded-but-idle
+controller kept serving the previous release's policy, so the first
+"grant Tailarr Server" click after upgrading failed with `tags API:
+requested tags [tag:tailarr-can-server] are invalid or not permitted`.
+
+The controller now runs one policy sync at startup (when a credential
+is configured), which also triggers the identity-tag reconcile. Upgrade
+→ restart → fences match the running release, no manual action.
+
 ## v0.10.1 — OAuth client can self-assign tag:tailarr-ctrl (2026-07-19)
 
 First live run of the one-credential bootstrap on a fresh tailnet

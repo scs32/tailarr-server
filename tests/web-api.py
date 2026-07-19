@@ -691,6 +691,34 @@ finally:
     app._ts_token = _real_ts_token3
     app.ts_api = _real_ts_api3
 
+# --- startup policy sync: upgrades that add managed tags self-apply -------
+# (v0.10.0 added can-server; an upgraded-but-idle controller never synced,
+# so the first server grant failed. _maintenance_loop now syncs once at
+# start — assert the extracted helper syncs when a credential exists and
+# stays quiet when none does.)
+_real_ts_token4 = app._ts_token
+_real_sync4 = app.ts_policy_sync
+_sync_calls = []
+app.ts_policy_sync = lambda: (_sync_calls.append(1),
+                              {"ok": True, "changed": True,
+                               "error": None})[1]
+try:
+    app._ts_token = lambda: ""
+    app._startup_policy_sync()
+    check(not _sync_calls, "startup sync is a no-op without a credential")
+    app._ts_token = lambda: "dummy-test-token"
+    app._startup_policy_sync()
+    check(len(_sync_calls) == 1, "startup sync runs once a credential exists")
+
+    def _sync_boom():
+        raise RuntimeError("api down")
+    app.ts_policy_sync = _sync_boom
+    app._startup_policy_sync()  # must not raise — startup can't be blocked
+    check(True, "startup sync swallows API failures (startup never blocks)")
+finally:
+    app._ts_token = _real_ts_token4
+    app.ts_policy_sync = _real_sync4
+
 # --- API bearer tokens: mint, require, gate, auto-relax -------------------
 
 

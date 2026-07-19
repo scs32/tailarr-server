@@ -38,7 +38,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.10.1"
+VERSION = "0.10.2"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -3277,12 +3277,34 @@ def ensure_controller_serve():
               + (a.stdout + a.stderr).strip().replace("\n", " "))
 
 
+def _startup_policy_sync():
+    """One policy sync at controller start (credential permitting).
+
+    A release can ADD managed tags/grants (v0.10.0's can-server did), and
+    fences otherwise sync only on mutating actions — an upgraded-but-idle
+    controller kept serving a stale policy, so the first server grant
+    after upgrading failed with "requested tags invalid or not permitted"
+    (live-hit twice on 2026-07-19). The sync also fires the tag
+    reconcile as its natural follow-on."""
+    if not _ts_token():
+        return
+    try:
+        sync = ts_policy_sync()
+        if not sync["ok"]:
+            print(f"startup policy sync: {sync['error']}")
+        elif sync["changed"]:
+            print("startup policy sync: fences updated to this release")
+    except Exception as e:  # never block startup on the tailscale API
+        print(f"startup policy sync error: {e}")
+
+
 def _maintenance_loop():
     """Periodic self-heal: controller serve config + sidecar identity tags.
 
     Both failure modes are silent by nature (serve: HTTPS just absent;
     tags: users filtered while everything reads healthy), so they are
     re-asserted on a timer as well as on their natural trigger events."""
+    _startup_policy_sync()
     while True:
         try:
             ensure_controller_serve()
