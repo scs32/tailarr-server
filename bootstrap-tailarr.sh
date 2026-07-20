@@ -20,7 +20,7 @@ PODS_DIR="${PODS_DIR:-$HOME/Pods}"
 # fresh install right after a release can't catch a stale :latest manifest
 # from GHCR. CI enforces that this matches web/app.py's VERSION; bump both
 # when cutting a release. HOMEPOD_IMAGE still overrides everything.
-TAILARR_VERSION="0.12.0"
+TAILARR_VERSION="0.13.0"
 IMAGE="${HOMEPOD_IMAGE:-ghcr.io/scs32/tailarr:v${TAILARR_VERSION}}"
 TS_IMAGE="docker.io/tailscale/tailscale:stable"
 SOCKET="/run/podman/podman.sock"
@@ -39,6 +39,22 @@ if [[ "$host_mtu" -lt 1500 ]] && ! grep -qs "network_cmd_options" /etc/container
     echo "Host MTU is $host_mtu - matching container network MTU..."
     printf '[engine]\nnetwork_cmd_options=["mtu=%s"]\n' "$host_mtu" >> /etc/containers/containers.conf
 fi
+
+# --- host platform fact ----------------------------------------------------
+# apple/container guests run vminitd as PID 1 (no systemd) — that one fact
+# drives platform-specific behavior in the controller (peer-relay offer,
+# skipping the systemd mounts drop-in helper). Recorded once per bootstrap;
+# the controller backfills this file on upgraded installs that predate it.
+# Do NOT use /sys/class/dmi here: arm64 guests may have no SMBIOS at all.
+pid1=$(cat /proc/1/comm 2>/dev/null || echo unknown)
+platform=linux
+[[ "$pid1" == "vminitd" ]] && platform=apple-container
+dt=$(tr -d '\0' < /proc/device-tree/compatible 2>/dev/null || true)
+mkdir -p "$PODS_DIR"
+(umask 077; printf '{\n  "platform": "%s",\n  "pid1": "%s",\n  "dt_compatible": "%s",\n  "detected_at": %s,\n  "detected_by": "bootstrap"\n}\n' \
+    "$platform" "$pid1" "$dt" "$(date +%s)" > "$PODS_DIR/.host.json")
+chmod 600 "$PODS_DIR/.host.json"
+echo "Host platform: $platform (pid1=$pid1)"
 
 # --- credential ------------------------------------------------------------
 # A Tailscale OAuth client is THE install credential (Tailarr's model is a
