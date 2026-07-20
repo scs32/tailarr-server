@@ -798,6 +798,70 @@ code, data = get("/api/tokens")
 check(code == 200 and data["require"] is False and data["tokens"] == [],
       "deleting the last token auto-relaxes require (no lockout state)")
 
+# --- private registries: validate, store 0600, render authfile ------------
+import base64  # noqa: E402
+
+code, data = get("/api/registries")
+check(code == 200 and data["registries"] == [], "registries start empty")
+
+code, data = post("/api/registries", {"do": "save",
+                  "registry": "https://ghcr.io",
+                  "username": "u", "secret": "s"})
+check(code == 400 and "hostname" in data["error"],
+      "registry hosts with a scheme are rejected")
+
+code, data = post("/api/registries", {"do": "save", "registry": "ghcr.io",
+                  "username": "", "secret": "s"})
+check(code == 400, "a missing username is rejected")
+
+_real_probe = app._registry_login_probe
+try:
+    app._registry_login_probe = lambda h, u, s: (False, "401 unauthorized")
+    code, data = post("/api/registries", {"do": "save", "registry": "ghcr.io",
+                      "username": "scs32",
+                      "secret": "dummy-test-registry-secret"})
+    check(code == 400 and "rejected" in data["error"],
+          "a failing registry login blocks the save")
+
+    app._registry_login_probe = lambda h, u, s: (True, None)
+    code, data = post("/api/registries", {"do": "save", "registry": "ghcr.io",
+                      "username": "scs32",
+                      "secret": "dummy-test-registry-secret"})
+    check(code == 200 and data["ok"], "a validated credential saves")
+finally:
+    app._registry_login_probe = _real_probe
+
+regfile = os.path.join(pods, ".registries.json")
+authfile = os.path.join(pods, ".registry-auth.json")
+check(os.stat(regfile).st_mode & 0o777 == 0o600, "credential store is 0600")
+check(os.stat(authfile).st_mode & 0o777 == 0o600, "rendered authfile is 0600")
+with open(authfile) as f:
+    auths = json.load(f)["auths"]
+check(auths["ghcr.io"]["auth"]
+      == base64.b64encode(b"scs32:dummy-test-registry-secret").decode(),
+      "authfile carries containers-auth base64 for podman/skopeo")
+
+code, data = get("/api/registries")
+check(code == 200 and data["registries"] == [
+      {"registry": "ghcr.io", "username": "scs32",
+       "created": data["registries"][0]["created"]}],
+      "registry list carries host + username only, never the secret")
+
+with open(os.path.join(pods, "apitest", "run.sh")) as f:
+    check("REGISTRY_AUTH_FILE" in f.read(),
+          "generated run.sh exports the authfile to podman when present")
+
+check(app.registry_env()["REGISTRY_AUTH_FILE"] == authfile,
+      "controller podman/skopeo calls point at the authfile")
+
+code, data = post("/api/registries", {"do": "delete", "registry": "nope.io"})
+check(code == 400, "deleting an unknown registry fails")
+code, data = post("/api/registries", {"do": "delete", "registry": "ghcr.io"})
+check(code == 200 and data["ok"] and not os.path.exists(authfile),
+      "deleting the last registry removes the authfile")
+check(app.registry_env() is None,
+      "without credentials the environment is untouched")
+
 catsrv.shutdown()
 srv.shutdown()
 print("WEB API TEST PASSED")

@@ -28,6 +28,13 @@ set -e
 # Seconds to wait between startup phases (override with WAIT=0 ./run.sh)
 WAIT="\${WAIT:-10}"
 
+# Private-registry credentials (Settings -> Private registries): the
+# controller renders a standard containers authfile one level up in the
+# Pods dir; podman reads it through this env var for every pull below.
+if [ -f "\$(dirname "\$(pwd)")/.registry-auth.json" ]; then
+  export REGISTRY_AUTH_FILE="\$(dirname "\$(pwd)")/.registry-auth.json"
+fi
+
 # Automatically remove existing containers for this service only
 echo "Removing existing $service containers..."
 podman rm -f $service 2>/dev/null || true

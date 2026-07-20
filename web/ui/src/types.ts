@@ -192,6 +192,18 @@ export interface TokensStatus {
   tokens: TokenEntry[];
 }
 
+// GET /api/registries — private-registry credentials for image pulls.
+// Secrets never leave the server; entries carry host + username only.
+export interface RegistryEntry {
+  registry: string;
+  username: string;
+  created: string;
+}
+
+export interface RegistriesStatus {
+  registries: RegistryEntry[];
+}
+
 export interface ActionResult {
   ok: boolean;
   name: string;

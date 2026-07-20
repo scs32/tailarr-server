@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.12.0 — private registry credentials (2026-07-19)
+
+Pull private OCI images (e.g. a private GHCR package) everywhere Tailarr
+pulls:
+
+- **Settings → Private registries**: add a registry host + username +
+  token (for GitHub, a PAT with `read:packages`). The credential is
+  validated with a real `podman login` before saving, stored `0600` in
+  `Pods/.registries.json`, and never returned by the API.
+- The store renders to `Pods/.registry-auth.json`, a standard
+  containers-auth file. Generated `run.sh` scripts export
+  `REGISTRY_AUTH_FILE` when it exists (pre-existing pods pick this up
+  after "Finish upgrade" / a fleet rerender), and the controller's own
+  `podman pull` (Update button) and `skopeo inspect` (update checks)
+  use it too.
+- New API: `GET /api/registries`, `POST /api/registries`
+  (`do: save|delete`).
+
 ## v0.11.0 — OAuth-only install; simpler Settings (2026-07-19)
 
 Direction change from the field: Tailarr's model is a dedicated tailnet

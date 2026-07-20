@@ -16,6 +16,7 @@ import type {
   Pod,
   PodConfigResult,
   ReconfigureRequest,
+  RegistriesStatus,
   Share,
   ShareResult,
   Source,
@@ -151,6 +152,22 @@ export const api = {
       "/api/users/keys",
       {},
     ),
+
+  registries: () => getJSON<RegistriesStatus>("/api/registries"),
+
+  registrySave: (registry: string, username: string, secret: string) =>
+    postJSON<{ ok: boolean; error: string | null }>("/api/registries", {
+      do: "save",
+      registry,
+      username,
+      secret,
+    }),
+
+  registryDelete: (registry: string) =>
+    postJSON<{ ok: boolean; error: string | null }>("/api/registries", {
+      do: "delete",
+      registry,
+    }),
 
   tokens: () => getJSON<TokensStatus>("/api/tokens"),
 

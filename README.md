@@ -149,6 +149,17 @@ Add an entry to `homelab.js`:
 Optional fields: `"command"` (appended after the image) and
 `"memory_limit"` (podman `-m`).
 
+### Private images
+
+Public images just work. To deploy a **private** image — say one you
+publish to GitHub's `ghcr.io` — add a login under **Settings → Private
+registries** first: the registry host, your username, and a token (for
+GitHub, a personal access token with the `read:packages` scope). Tailarr
+verifies the login against the registry before saving, stores it
+privately on the server (`0600`, never shown again), and every image
+pull — installs, the per-pod Update button, and update checks — uses it
+from then on.
+
 ## Running on macOS in a full VM (recommended)
 
 Tailarr needs a Linux host, but you don't need a separate machine — a

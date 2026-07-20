@@ -20,6 +20,7 @@ Expects (provided by the container image / bootstrap script):
   - host podman socket mounted, CONTAINER_HOST pointing at it
 """
 
+import base64
 import hashlib
 import hmac
 import json
@@ -38,7 +39,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.11.0"
+VERSION = "0.12.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -295,7 +296,8 @@ def pod_config(name):
 def podman(*args, timeout=60):
     try:
         return subprocess.run(
-            ["podman", *args], capture_output=True, text=True, timeout=timeout
+            ["podman", *args], capture_output=True, text=True, timeout=timeout,
+            env=registry_env(),  # private-registry pulls (None = inherit)
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         return subprocess.CompletedProcess(args, 1, "", f"podman unavailable: {e}")
@@ -421,6 +423,7 @@ def _image_update_status(image):
         r = subprocess.run(
             ["skopeo", "inspect", "--format", "{{.Digest}}", f"docker://{image}"],
             capture_output=True, text=True, timeout=60,
+            env=registry_env(),  # digest checks work for private images too
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         return {"update": False, "error": f"skopeo unavailable: {e}"}
@@ -1624,6 +1627,130 @@ def token_auth_ok(header):
     digest = hashlib.sha256(header[7:].strip().encode()).hexdigest()
     return any(hmac.compare_digest(digest, t.get("sha256", ""))
                for t in reg["tokens"])
+
+
+# =========================================================================
+# Private registry credentials — pulls of private OCI images (e.g. GHCR).
+#
+# .registries.json (0600) is the source of truth: registry host -> username
+# + secret (a GitHub PAT with read:packages for ghcr.io). Every change
+# re-renders .registry-auth.json, a standard containers-auth file that
+# podman AND skopeo read via the REGISTRY_AUTH_FILE env var — exported by
+# every generated run.sh (pull-on-run), by the controller's podman()
+# wrapper (the Update button's explicit pull), and by the skopeo
+# update-digest check. Credentials are validated with a live `podman
+# login` before saving; the API only ever returns host + username, never
+# the secret.
+# =========================================================================
+REGISTRIES_FILE = os.path.join(PODS_DIR, ".registries.json")
+REGISTRY_AUTH_FILE = os.path.join(PODS_DIR, ".registry-auth.json")
+
+# Registry hosts are DNS names with an optional :port (ghcr.io,
+# registry.example.com:5000). Anything else is a typo or an injection.
+REGISTRY_HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$")
+
+
+def load_registries():
+    try:
+        with open(REGISTRIES_FILE) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {h: e for h, e in data.items()
+            if isinstance(e, dict) and e.get("username") and e.get("secret")}
+
+
+def save_registries(reg):
+    """Persist the credential store and re-render the podman authfile."""
+    _write_secret(REGISTRIES_FILE, json.dumps(reg, indent=2) + "\n")
+    render_registry_auth(reg)
+
+
+def render_registry_auth(reg):
+    """Render .registries.json into containers-auth format (the docker
+    config.json "auths" shape podman/skopeo consume). No credentials ->
+    no authfile, so run.sh scripts skip the export entirely."""
+    if not reg:
+        try:
+            os.remove(REGISTRY_AUTH_FILE)
+        except OSError:
+            pass
+        return
+    auths = {}
+    for host, entry in reg.items():
+        raw = f"{entry['username']}:{entry['secret']}".encode()
+        auths[host] = {"auth": base64.b64encode(raw).decode()}
+    _write_secret(REGISTRY_AUTH_FILE, json.dumps({"auths": auths}, indent=2) + "\n")
+
+
+def registry_env():
+    """subprocess env for podman/skopeo calls: point them at the rendered
+    authfile when one exists (both tools honor REGISTRY_AUTH_FILE)."""
+    if os.path.exists(REGISTRY_AUTH_FILE):
+        return {**os.environ, "REGISTRY_AUTH_FILE": REGISTRY_AUTH_FILE}
+    return None
+
+
+def status_registries():
+    """Registry list for the UI — hosts and usernames only, never secrets."""
+    return {"registries": [
+        {"registry": h, "username": e.get("username", ""),
+         "created": e.get("created", "")}
+        for h, e in sorted(load_registries().items())]}
+
+
+def _registry_login_probe(host, username, secret):
+    """Validate a credential with a real `podman login` against the
+    registry, into a throwaway authfile. Returns (ok, error)."""
+    tmp = REGISTRY_AUTH_FILE + ".probe"
+    try:
+        r = subprocess.run(
+            ["podman", "login", "--authfile", tmp,
+             "--username", username, "--password-stdin", host],
+            input=secret, capture_output=True, text=True, timeout=30,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return False, f"podman unavailable: {e}"
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    if r.returncode != 0:
+        return False, (r.stderr or "login failed").strip()[-300:]
+    return True, None
+
+
+def op_registry_save(data):
+    """Validate, then add or replace one registry's credential."""
+    host = (data.get("registry") or "").strip().lower()
+    username = (data.get("username") or "").strip()
+    secret = (data.get("secret") or "").strip()
+    if not REGISTRY_HOST_RE.fullmatch(host):
+        return {"ok": False, "error": "Registry must be a hostname like "
+                "ghcr.io (no scheme, no path)."}
+    if not username or not secret:
+        return {"ok": False, "error": "Both a username and a token are needed."}
+    ok, err = _registry_login_probe(host, username, secret)
+    if not ok:
+        return {"ok": False, "error": f"The registry rejected this "
+                f"credential: {err}"}
+    reg = load_registries()
+    reg[host] = {"username": username, "secret": secret,
+                 "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    save_registries(reg)
+    return {"ok": True, "error": None}
+
+
+def op_registry_delete(host):
+    reg = load_registries()
+    if host not in reg:
+        return {"ok": False, "error": "No such registry."}
+    del reg[host]
+    save_registries(reg)
+    return {"ok": True, "error": None}
 
 
 # =========================================================================
@@ -3030,6 +3157,8 @@ def api_get(path):
         return 200, status_users()
     if path == "/api/tokens":
         return 200, status_tokens()
+    if path == "/api/registries":
+        return 200, status_registries()
     if path == "/api/shares":
         return 200, {"shares": status_shares()}
     if path == "/api/sources":
@@ -3173,6 +3302,16 @@ def api_post(path, data):
             result = {"ok": False, "error": f"unknown do '{do}'"}
         return (200 if result["ok"] else 400), result
 
+    if path == "/api/registries":
+        do = data.get("do") or ""
+        if do == "save":
+            result = op_registry_save(data)
+        elif do == "delete":
+            result = op_registry_delete((data.get("registry") or "").strip().lower())
+        else:
+            result = {"ok": False, "error": f"unknown do '{do}'"}
+        return (200 if result["ok"] else 400), result
+
     # --- credential wizard (Settings) ---
     if path == "/api/tsapi/validate":
         return 200, op_tsapi_validate(data)  # per-capability result body
@@ -3304,6 +3443,13 @@ def _maintenance_loop():
     Both failure modes are silent by nature (serve: HTTPS just absent;
     tags: users filtered while everything reads healthy), so they are
     re-asserted on a timer as well as on their natural trigger events."""
+    try:
+        # Re-render the registry authfile from the credential store so a
+        # restored backup (or an authfile-format change in a new release)
+        # never leaves pulls running on a stale or missing file.
+        render_registry_auth(load_registries())
+    except Exception as e:
+        print(f"registry authfile render error: {e}")
     _startup_policy_sync()
     while True:
         try:

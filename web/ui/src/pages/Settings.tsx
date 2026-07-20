@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { TsApiStatus } from "../types";
 import { api } from "../api";
 import { Alert } from "../components/Alert";
+import { RegistriesCard } from "../components/RegistriesCard";
 import { TsApiWizard } from "../components/TsApiWizard";
 import { UpgradeCard } from "../components/UpgradeCard";
 
@@ -64,6 +65,11 @@ export function Settings() {
             }}
           />
         )}
+
+        <div className="section-title" style={{ marginTop: "var(--sp-6)" }}>
+          Private registries
+        </div>
+        <RegistriesCard />
       </div>
     </>
   );
