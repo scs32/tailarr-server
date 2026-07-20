@@ -259,6 +259,34 @@ export interface Info {
   version: string;
   upgrade_available: boolean; // a newer controller release is known
   tsapi: TsApiStatus;
+  host_platform: string; // "apple-container" | "linux" | "unknown"
+  relay: RelayStatus;
+}
+
+// GET /api/relay — peer-relay state for apple/container installs. The
+// grant is auto-emitted only when the pre-flight says the tailnet looks
+// dedicated; `reasons` explains a negative verdict in customer language.
+export interface RelayStatus {
+  platform: string;
+  applicable: boolean; // host is an apple/container guest
+  enabled: boolean | null; // null = auto (follow the pre-flight)
+  eligible: boolean;
+  reasons: string[];
+  counts: Record<string, number>;
+  grant_active: boolean;
+  dst_fallback: boolean;
+  verified: {
+    state: "unknown" | "derp" | "direct" | "peer-relay";
+    at: number;
+    detail: string;
+  };
+}
+
+export interface RelayActionResult {
+  ok: boolean;
+  error?: string | null;
+  relay: RelayStatus;
+  sync?: { ok: boolean; changed: boolean; error: string | null };
 }
 
 // GET /api/controller/upgrade — Settings upgrade card state.

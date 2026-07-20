@@ -862,6 +862,212 @@ check(code == 200 and data["ok"] and not os.path.exists(authfile),
 check(app.registry_env() is None,
       "without credentials the environment is untouched")
 
+# --- peer relay: platform gate, pre-flight, grant, fallback, verify -------
+import types  # noqa: E402
+
+# Before any .host.json exists the whole feature is inert.
+code, data = get("/api/relay")
+check(code == 200 and data["applicable"] is False
+      and data["grant_active"] is False,
+      "relay is not applicable before a platform fact exists")
+code, data = get("/api/info")
+check(data["host_platform"] == "unknown" and "relay" in data,
+      "/api/info carries host_platform + relay")
+secs = app._managed_sections()
+check(not any("cap/relay" in ln for ln in secs["grants"]),
+      "no relay grant without a platform fact")
+
+# Become an apple/container install.
+with open(os.path.join(pods, ".host.json"), "w") as f:
+    json.dump({"platform": "apple-container", "pid1": "vminitd",
+               "detected_by": "test"}, f)
+app._host_platform_cache = None
+check(app.host_platform() == "apple-container", "platform fact is read")
+
+FENCED_POLICY = "\n".join([
+    "{",
+    "  // >>> tailarr-managed:grants",
+    "  // <<< tailarr-managed:grants",
+    '  "tagOwners": {',
+    "    // >>> tailarr-managed:tagowners",
+    "    // <<< tailarr-managed:tagowners",
+    "  },",
+    "  // >>> tailarr-managed:nodeattrs",
+    "  // <<< tailarr-managed:nodeattrs",
+    "}",
+])
+
+
+def _devices(n_foreign, n_users, n_tagged=2):
+    devs = [{"nodeId": f"t{i}", "hostname": f"tailarr-{i}",
+             "tags": ["tag:tailarr"], "user": "admin@x"}
+            for i in range(n_tagged)]
+    devs += [{"nodeId": f"f{i}", "hostname": f"dev-{i}", "tags": [],
+              "user": f"user{i % max(n_users, 1)}@x"}
+             for i in range(n_foreign)]
+    return {"devices": devs}
+
+
+_real_ts_token5 = app._ts_token
+_real_ts_acl5 = app._ts_acl
+_real_ts_api5 = app.ts_api
+_real_sync5 = app.ts_policy_sync
+_real_reconcile5 = app.ts_reconcile_tags
+try:
+    app._ts_token = lambda: "dummy-test-token"
+    app._ts_acl = lambda m, p="", b=None, etag=None: (200, FENCED_POLICY, "e1")
+    app.ts_api = lambda m, p, b=None: (200, _devices(3, 1))
+    app.ts_reconcile_tags = lambda *a, **k: None
+
+    pf = app.ts_relay_preflight()
+    check(pf["eligible"] and pf["reasons"] == []
+          and pf["counts"]["foreign_devices"] == 3,
+          "pre-flight passes on a small dedicated-looking tailnet")
+    app.save_relay({"preflight": pf})
+    secs = app._managed_sections()
+    check(any("cap/relay" in ln and "autogroup:admin" in ln
+              for ln in secs["grants"]),
+          "eligible auto mode emits the relay grant (autogroup:admin dst)")
+    check(any("tag:tailarr-relay" in ln for ln in secs["tagowners"]),
+          "tag:tailarr-relay lands in tagOwners")
+    check(app._sections_prefix_ok(secs),
+          "the relay grant passes the tag prefix invariant")
+
+    # Splice idempotency with the relay sections present.
+    text1 = app._splice_fences(FENCED_POLICY, secs)
+    check(app._splice_fences(text1, secs) == text1,
+          "relay sections splice idempotently")
+
+    # A busy tailnet flips the verdict and withholds the grant.
+    app.ts_api = lambda m, p, b=None: (200, _devices(14, 4))
+    pf = app.ts_relay_preflight()
+    check(not pf["eligible"] and len(pf["reasons"]) == 2,
+          "pre-flight fails on device count AND user count")
+    app.save_relay({"preflight": pf})
+    check(not any("cap/relay" in ln
+                  for ln in app._managed_sections()["grants"]),
+          "ineligible auto mode withholds the grant")
+
+    # Explicit user enable overrides the verdict (opt-in banner button).
+    app.ts_policy_sync = lambda: {"ok": True, "changed": True, "error": None}
+    code, data = post("/api/relay", {"do": "enable"})
+    check(code == 200 and data["ok"] and data["relay"]["grant_active"],
+          "POST /api/relay enable overrides an ineligible verdict")
+    relayfile = os.path.join(pods, ".relay.json")
+    check(os.stat(relayfile).st_mode & 0o777 == 0o600,
+          "relay state file is 0600")
+    saved = app.load_relay()
+    check(saved["enabled"] is True and saved["decided_by"] == "user",
+          "the explicit decision is recorded as the user's")
+    check(any("cap/relay" in ln for ln in app._managed_sections()["grants"]),
+          "user enable emits the grant regardless of pre-flight")
+
+    code, data = post("/api/relay", {"do": "bogus"})
+    check(code == 400, "unknown relay action is a 400")
+
+    # Validate-rejection ladder: admin dst -> member dst -> grant dropped.
+    # The fake control plane rejects any policy containing autogroup:admin
+    # in the relay grant, accepts everything else.
+    def _acl_reject_admin(method, path_suffix="", body_text=None, etag=None):
+        if method == "GET":
+            return 200, FENCED_POLICY, "e1"
+        if path_suffix == "/validate" and "autogroup:admin\"]" in (
+                body_text or "") and "cap/relay" in (body_text or ""):
+            return 200, '{"message": "autogroup:admin not allowed here"}', ""
+        if path_suffix == "/validate":
+            return 200, "{}", ""
+        return 200, "", "e2"
+
+    app._ts_acl = _acl_reject_admin
+    app.ts_policy_sync = _real_sync5
+    r = app.load_relay()
+    r["dst_fallback"] = False
+    app.save_relay(r)
+    sync = app.ts_policy_sync()
+    check(sync["ok"] and app.load_relay()["dst_fallback"] is True,
+          "validate reject of autogroup:admin falls back to member dst")
+    check(any("autogroup:member\"]" in ln
+              for ln in app._managed_sections()["grants"] if "cap/relay" in ln),
+          "the emitted grant now carries the member dst")
+
+    # ...and when the grant is rejected in ANY form, it is dropped rather
+    # than wedging the sync (the relay-free probe validates fine).
+    def _acl_reject_relay(method, path_suffix="", body_text=None, etag=None):
+        if method == "GET":
+            return 200, FENCED_POLICY, "e1"
+        if path_suffix == "/validate" and "cap/relay" in (body_text or ""):
+            return 200, '{"message": "no cap grants for you"}', ""
+        if path_suffix == "/validate":
+            return 200, "{}", ""
+        return 200, "", "e2"
+
+    app._ts_acl = _acl_reject_relay
+    r = app.load_relay()
+    r["dst_fallback"] = False
+    r["enabled"] = True
+    app.save_relay(r)
+    sync = app.ts_policy_sync()
+    saved = app.load_relay()
+    check(sync["ok"] and saved["enabled"] is False
+          and saved["decided_by"] == "auto-validate-reject",
+          "a fully-rejected relay grant disables itself; sync still lands")
+    check(any("rejected the relay grant" in x
+              for x in saved["preflight"]["reasons"]),
+          "the rejection reason is surfaced for the banner")
+
+    # Disable drops the grant on the next splice.
+    app._ts_acl = lambda m, p="", b=None, etag=None: (200, FENCED_POLICY, "e1")
+    app.ts_policy_sync = lambda: {"ok": True, "changed": True, "error": None}
+    code, data = post("/api/relay", {"do": "disable"})
+    check(code == 200 and data["ok"]
+          and not data["relay"]["grant_active"],
+          "POST /api/relay disable withdraws the grant")
+finally:
+    app._ts_token = _real_ts_token5
+    app._ts_acl = _real_ts_acl5
+    app.ts_api = _real_ts_api5
+    app.ts_policy_sync = _real_sync5
+    app.ts_reconcile_tags = _real_reconcile5
+
+# Sidecar connectivity classification (canned `tailscale status --json`).
+_real_podman5 = app.podman
+_real_ctrl5 = app._controller_name
+
+
+def _fake_status_podman(doc):
+    def fake(*args, timeout=60):
+        if "status" in args:
+            return types.SimpleNamespace(returncode=0,
+                                         stdout=json.dumps(doc), stderr="")
+        if "version" in args:
+            return types.SimpleNamespace(returncode=0,
+                                         stdout="1.90.1\n", stderr="")
+        return types.SimpleNamespace(returncode=1, stdout="", stderr="nope")
+    return fake
+
+
+try:
+    app._controller_name = lambda: "tailarr"
+    app.podman = _fake_status_podman(
+        {"Peer": {"a": {"Active": True, "PeerRelay": "100.64.0.9:40000",
+                        "CurAddr": "", "Relay": "sfo"}}})
+    check(app.relay_verify()["state"] == "peer-relay",
+          "an active PeerRelay peer classifies as peer-relay")
+    app.podman = _fake_status_podman(
+        {"Peer": {"a": {"Active": True, "PeerRelay": "",
+                        "CurAddr": "1.2.3.4:41641", "Relay": "sfo"}}})
+    check(app.relay_verify()["state"] == "direct",
+          "a CurAddr peer classifies as direct")
+    app.podman = _fake_status_podman(
+        {"Peer": {"a": {"Active": True, "PeerRelay": "",
+                        "CurAddr": "", "Relay": "sfo"}}})
+    v = app.relay_verify()
+    check(v["state"] == "derp" and "1.90.1" in v["detail"],
+          "a DERP-only peer classifies as derp and surfaces the version")
+finally:
+    app.podman = _real_podman5
+    app._controller_name = _real_ctrl5
+
 catsrv.shutdown()
 srv.shutdown()
 print("WEB API TEST PASSED")

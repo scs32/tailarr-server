@@ -321,3 +321,44 @@ Still true from the original design: `tag:tailarr-ctrl` itself is never
 placed on a consumer device, and the token layer has no roles yet — a
 token is all-or-nothing. Scoped/read-only tokens are the obvious next cut
 if the app grows a family-facing dashboard.
+
+## 10. Addendum (2026-07-20): the peer-relay grant (apple/container)
+
+apple/container guests sit behind a NAT'd vmnet subnet Tailscale cannot
+hole-punch, so every sidecar connection falls back to DERP. Tailscale
+peer relays (GA 2026-02, clients 1.86+) fix the throughput: the Mac
+hosting the guest runs `tailscale set --relay-server-port=40000`
+(install-mac.sh does it), and a fenced grant authorizes devices to use
+it:
+
+    {"src": ["tag:tailarr", "tag:tailarr-user", "autogroup:member"],
+     "dst": ["tag:tailarr-relay", "autogroup:admin"],
+     "app": {"tailscale.com/cap/relay": []}}
+
+Design points, in the spirit of the rest of this doc:
+
+- **The cap grants relaying only — never network access.** The packet
+  filter still decides who reaches what; this only lets connections that
+  already pass it detour through a better relay than DERP.
+- **BOTH ends of a connection need the cap**, hence `autogroup:member`
+  in src (the admin's untagged phone/laptop) alongside the fleet tags.
+- **dst (who may ACT as a relay) never tags the personal Mac.**
+  Tagging a personal device strips its user identity and disables key
+  expiry — wrong to do silently. `autogroup:admin` matches the Mac as
+  the admin's device; `tag:tailarr-relay` (fenced tagOwners, ctrl
+  co-owned) exists for a future dedicated relay box. Only devices
+  actually running a relay server advertise, so the wide dst is inert.
+- **Auto-emission is pre-flight-gated** (ts_relay_preflight): policy
+  adopted by Tailarr + sane ACL size + small foreign-device/user counts
+  — i.e. the tailnet matches the dedicated-tailnet product model. Any
+  doubt ⇒ nothing is emitted; Settings → Peer relay shows the reasons
+  with an explicit enable button (`Pods/.relay.json` records who
+  decided).
+- **A relay problem may never wedge ts_policy_sync**: if /validate
+  rejects a splice that carries the grant AND a relay-free probe
+  validates, the grant is the culprit — downgrade one rung per retry
+  (`autogroup:admin` dst → `autogroup:member` → grant disabled,
+  recorded as `auto-validate-reject`).
+- The controller verifies from its own sidecar (`tailscale status
+  --json` → peer-relay / direct / derp) in the maintenance loop; the
+  Settings banner clears on peer-relay *or* direct.

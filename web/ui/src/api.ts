@@ -17,6 +17,8 @@ import type {
   PodConfigResult,
   ReconfigureRequest,
   RegistriesStatus,
+  RelayActionResult,
+  RelayStatus,
   Share,
   ShareResult,
   Source,
@@ -109,6 +111,11 @@ export const api = {
 
   fleet: (action: FleetAction) =>
     postJSON<FleetResult>("/api/fleet", { do: action }),
+
+  relay: () => getJSON<RelayStatus>("/api/relay"),
+
+  relayAction: (action: "enable" | "disable" | "recheck") =>
+    postJSON<RelayActionResult>("/api/relay", { do: action }),
 
   upgradeStatus: () => getJSON<UpgradeStatus>("/api/controller/upgrade"),
 

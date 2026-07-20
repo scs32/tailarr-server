@@ -169,9 +169,10 @@ on a Mac. Two field-tested rules make it work well:
 
 **Use bridged networking.** A bridged VM gets its own address on your
 LAN, so its Tailscale sidecars negotiate *direct* WireGuard paths.
-NAT-style networking (the apple/container path below, and Fusion's
-"Share with my Mac" mode) often forces Tailscale onto **DERP relays**,
-which caps every stream at relay speeds — unusable for media.
+NAT-style networking (Fusion's "Share with my Mac" mode) often forces
+Tailscale onto **DERP relays**, which caps every stream at relay speeds
+— unusable for media. (The apple/container path below is also NAT'd,
+but its installer compensates with a peer relay on the Mac.)
 
 **Give the VM its own virtual disk for media — don't pass host folders
 through.** Hypervisor shared folders (Fusion's hgfs, virtiofs) garble
@@ -212,18 +213,42 @@ Or skip the manual steps: as of v0.9.0 the web UI manages exports —
 **Shares page → NFS…** on any share (enter the allowed clients, pick
 read-only, done). Only `apt install -y nfs-kernel-server` stays manual.
 
-## Running on macOS with apple/container (not recommended for media)
-
-> **⚠️ DERP relay warning.** apple/container puts guests behind a NAT'd
-> `vmnet` subnet that Tailscale usually cannot hole-punch. In practice
-> the pods' tailnet connections fall back to **DERP relays** far too
-> often, throttling transfers to relay speeds even between devices on
-> the same LAN. It works, and it's fine for *trying* Tailarr — but for a
-> media server, use the full-VM setup above.
+## Running on macOS with apple/container
 
 Apple's [`container`](https://github.com/apple/container) tool
 (macOS 15+, Apple silicon) runs a lightweight Linux guest where podman
-and the pods live; macOS just hosts it.
+and the pods live; macOS just hosts it. One command does everything —
+creates the guest, installs Tailarr inside it, and configures the fix
+for apple/container's big catch (see the note below):
+
+```sh
+TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr-server/main/install-mac.sh)"
+```
+
+Prerequisites: `brew install container`, plus the
+[Tailscale app](https://tailscale.com/download) (1.86+) logged in to the
+same tailnet the OAuth client belongs to. `GUEST_NAME`, `MEDIA_DIR`
+(default `~/poddata`, mapped to `/data` in the guest) and `RELAY_PORT`
+are overridable via env.
+
+> **The DERP problem, and the peer-relay fix.** apple/container puts
+> guests behind a NAT'd `vmnet` subnet that Tailscale cannot hole-punch,
+> so every pod connection falls back to **DERP relays** — throttled to
+> relay speeds even between devices on the same LAN. The installer fixes
+> this by making your Mac a [Tailscale peer
+> relay](https://tailscale.com/docs/features/peer-relay)
+> (`tailscale set --relay-server-port=40000`): pods still relay, but
+> through the Mac they run on, at local speeds. The matching policy
+> grant is authored by the controller — automatically only when the
+> tailnet passes a pre-flight check (policy adopted by Tailarr, small
+> device/user counts — i.e. it looks like the dedicated tailnet Tailarr
+> assumes). Otherwise nothing is touched and **Settings → Peer relay**
+> shows exactly what was found, with an explicit enable button. The
+> grant carries only the relay *capability* (`tailscale.com/cap/relay`)
+> — it never opens network access, and your Mac is matched via
+> `autogroup:admin`, never by tagging your personal device.
+
+### Manual setup (what the installer does)
 
 **1. Install and start apple/container:**
 
@@ -285,13 +310,26 @@ container exec podhost /root/start-pods.sh
 To automate it, wire those two commands into a macOS **LaunchAgent** (or
 login item) so the guest and pods come up without you.
 
+**Peer relay by hand.** If you skipped `install-mac.sh`, enable the
+relay on the Mac yourself:
+
+```sh
+/Applications/Tailscale.app/Contents/MacOS/Tailscale set --relay-server-port=40000
+```
+
+then check **Settings → Peer relay** in the web UI — it verifies from
+the controller's own sidecar and keeps nudging until traffic actually
+leaves DERP. Pods deployed before v0.13.0 also need their sidecar image
+updated (peer relays need Tailscale 1.86+ in the *client* too).
+
 ## Supported platforms
 
 Debian/Ubuntu hosts with podman (auto-installed) — bare metal or a
-bridged VM. On macOS, prefer a full VM (**Running on macOS in a full
-VM** above); apple/container works but relays through DERP too often
-for media. See `bootstrap-tailarr.sh` for the MTU and boot-persistence
-handling that nested hosts need. Everything else: PRs welcome.
+bridged VM. On macOS: apple/container via `install-mac.sh` (the peer
+relay keeps pod traffic off DERP), or a full VM (**Running on macOS in
+a full VM** above). See `bootstrap-tailarr.sh` for the MTU and
+boot-persistence handling that nested hosts need. Everything else: PRs
+welcome.
 
 ## Development
 

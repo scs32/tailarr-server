@@ -39,7 +39,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.12.0"
+VERSION = "0.13.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -47,6 +47,21 @@ STATIC_DIR = os.environ.get("STATIC_DIR", os.path.join(APP_DIR, "static"))
 PORT = int(os.environ.get("PORT", "8080"))
 
 CONTROLLER_PODS = {"tailarr", "podscale", "homepod"}  # older names = pre-rename deploys
+
+# Host platform fact: written by the bootstrap (apple/container guests run
+# vminitd as PID 1 — that single fact drives the peer-relay offer and skips
+# host helpers that need systemd). Backfilled by the controller on installs
+# bootstrapped before this file existed. Peer-relay state lives beside it.
+HOST_FILE = os.path.join(PODS_DIR, ".host.json")
+RELAY_FILE = os.path.join(PODS_DIR, ".relay.json")
+RELAY_PREFLIGHT_TTL = 24 * 3600
+# "Does this look like a dedicated Tailarr tailnet?" thresholds — the relay
+# grant is only auto-emitted when the tailnet matches the product model (a
+# 1:1 tailnet per install); anything bigger needs the explicit Settings
+# opt-in. Foreign = devices without any tag:tailarr* tag.
+RELAY_MAX_ACL_LINES = 200
+RELAY_MAX_FOREIGN_DEVICES = 10
+RELAY_MAX_FOREIGN_USERS = 2
 
 # Shared media folders (the only thing allowed to pierce the pod barrier).
 # Each share: {"host_path": "/data", "container_path": "/data", "ro": false}
@@ -1214,8 +1229,13 @@ FENCE_BEGIN = "// >>> tailarr-managed:"
 FENCE_END = "// <<< tailarr-managed:"
 
 
-def _managed_sections():
-    """Desired fence contents, derived from the deployed service list."""
+def _managed_sections(relay_dst=None):
+    """Desired fence contents, derived from the deployed service list.
+
+    relay_dst: None derives the peer-relay grant from saved state
+    (_relay_grant_wanted); "" force-excludes it (used to probe whether a
+    validate rejection was the relay grant's fault); "admin"/"member"
+    force-include it with that autogroup in dst."""
     svcs = _shareable_services()
     grants = [
         '{"src": ["tag:tailarr"], "dst": ["tag:tailarr"], "ip": ["*"]},',
@@ -1248,6 +1268,25 @@ def _managed_sections():
     for s in svcs:
         owners.append(f'"tag:tailarr-svc-{s}": {OWN},')
         owners.append(f'"tag:tailarr-can-{s}": {OWN},')
+    # Peer relay (apple/container installs): a device on the tailnet — in
+    # practice the Mac hosting the guest — relays traffic that would
+    # otherwise fall back to DERP (vmnet NAT blocks direct paths). The cap
+    # grants RELAYING only, never network access. BOTH ends of a connection
+    # need the cap, so src includes autogroup:member (the admin's untagged
+    # phone/laptop). dst = who may ACT as a relay: autogroup:admin covers
+    # the personal Mac without tagging it (tagging a personal device would
+    # strip its user identity); tag:tailarr-relay is for a dedicated relay
+    # box. Validate-rejection of autogroup:admin downgrades dst to member.
+    if relay_dst is None:
+        relay_dst = ""
+        if _relay_grant_wanted():
+            relay_dst = "member" if load_relay().get("dst_fallback") else "admin"
+    if relay_dst:
+        grants.append(
+            '{"src": ["tag:tailarr", "tag:tailarr-user", "autogroup:member"], '
+            f'"dst": ["tag:tailarr-relay", "autogroup:{relay_dst}"], '
+            '"app": {"tailscale.com/cap/relay": []}}, // peer relay')
+        owners.append(f'"tag:tailarr-relay": {OWN},')
     attrs = ['{"target": ["tag:tailarr-public"], "attr": ["funnel"]},']
     return {"grants": grants, "tagowners": owners, "nodeattrs": attrs}
 
@@ -1337,7 +1376,9 @@ def ts_policy_sync():
         return {"ok": False, "changed": False,
                 "error": "generated content violates the tag prefix rule"}
     with _policy_lock:
-        for _attempt in range(2):
+        # 2 attempts covers a 412 retry; the extra headroom is for the
+        # peer-relay downgrade ladder (admin dst -> member dst -> no grant).
+        for _attempt in range(4):
             code, raw, etag = _ts_acl("GET")
             if code != 200:
                 return {"ok": False, "changed": False, "error": f"acl GET: {raw}"}
@@ -1354,6 +1395,15 @@ def ts_policy_sync():
                 return {"ok": True, "changed": False, "error": None}
             code, resp, _ = _ts_acl("POST", "/validate", new_text)
             if code != 200 or '"message"' in resp:
+                # A relay problem must never wedge policy sync. If the
+                # rejected policy carried the relay grant, probe a
+                # relay-free splice: only when THAT validates is the grant
+                # the culprit — then downgrade (member dst, then give up)
+                # and retry. Otherwise surface the original error.
+                downgraded = _relay_downgrade_after_reject(raw, resp)
+                if downgraded is not None:
+                    sections = downgraded
+                    continue
                 return {"ok": False, "changed": False, "error": f"acl validate: {resp[:300]}"}
             # keep the last-known-good policy for one-call rollback
             try:
@@ -1966,6 +2016,224 @@ def op_policy_init_fences():
     # Fill the (possibly empty) fences from the deployed service list.
     sync = ts_policy_sync()
     return {"ok": sync["ok"], "added": added, "error": sync["error"]}
+
+
+# =========================================================================
+# Peer relay (apple/container installs) -- see docs/acl-design.md and the
+# grant comment in _managed_sections. State machine: bootstrap records the
+# platform (.host.json); a pre-flight decides whether the tailnet looks
+# like the dedicated 1:1 tailnet the product assumes; only then is the
+# relay grant auto-emitted (Settings has an explicit override either way).
+# The Mac-side `tailscale set --relay-server-port` step lives in
+# install-mac.sh — the controller can't reach macOS, so it verifies from
+# its own sidecar and keeps nudging until traffic leaves DERP.
+# =========================================================================
+def load_relay():
+    try:
+        with open(RELAY_FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_relay(data):
+    tmp = RELAY_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, RELAY_FILE)
+    os.chmod(RELAY_FILE, 0o600)
+
+
+def _relay_grant_wanted():
+    """Pure disk read — _managed_sections() must stay deterministic and
+    offline. enabled True/False is the user's explicit call; null (auto)
+    follows the platform + pre-flight verdict."""
+    r = load_relay()
+    if r.get("enabled") is True:
+        return True
+    if r.get("enabled") is False:
+        return False
+    return (host_platform() == "apple-container"
+            and bool((r.get("preflight") or {}).get("eligible")))
+
+
+def ts_relay_preflight():
+    """Read-only 'does this tailnet look dedicated to Tailarr?' checks.
+
+    All must pass for auto-emission; any API failure is itself a reason
+    (fail closed). The reasons are shown verbatim in the Settings banner,
+    so they are written for the customer, not the log."""
+    reasons, counts = [], {}
+    fences_present = False
+    if not _ts_token():
+        reasons.append("No Tailscale API credential configured.")
+        return {"eligible": False, "reasons": reasons, "counts": counts,
+                "fences_present": False, "checked_at": int(time.time())}
+    code, raw, _etag = _ts_acl("GET")
+    if code != 200:
+        reasons.append(f"Could not read the tailnet policy: {raw}")
+    else:
+        fences_present = (_fence_sections_present(raw)
+                          == set(FENCE_SECTIONS))
+        if not fences_present:
+            reasons.append("The tailnet policy has not been adopted by "
+                           "Tailarr (fence markers missing).")
+        acl_lines = len([ln for ln in raw.splitlines() if ln.strip()])
+        counts["acl_lines"] = acl_lines
+        if acl_lines > RELAY_MAX_ACL_LINES:
+            reasons.append("The tailnet policy is unusually large "
+                           f"({acl_lines} lines) for a dedicated Tailarr "
+                           "tailnet.")
+    code, data = ts_api("GET", "/tailnet/-/devices")
+    if code != 200:
+        reasons.append(f"Could not list tailnet devices: {_snip(data)}")
+    else:
+        devs = data.get("devices", []) or []
+        foreign = [d for d in devs
+                   if not any(str(t).startswith("tag:tailarr")
+                              for t in d.get("tags") or [])]
+        users = {d.get("user") or "" for d in foreign}
+        counts.update({"devices": len(devs),
+                       "foreign_devices": len(foreign),
+                       "foreign_users": len(users)})
+        if len(foreign) > RELAY_MAX_FOREIGN_DEVICES:
+            reasons.append(f"Found {len(foreign)} devices that are not "
+                           "part of the Tailarr fleet (expected a "
+                           "dedicated tailnet).")
+        if len(users) > RELAY_MAX_FOREIGN_USERS:
+            reasons.append(f"Devices belong to {len(users)} different "
+                           "users — this doesn't look like a "
+                           "single-admin tailnet.")
+    return {"eligible": not reasons, "reasons": reasons, "counts": counts,
+            "fences_present": fences_present,
+            "checked_at": int(time.time())}
+
+
+def _relay_downgrade_after_reject(raw, resp):
+    """Called from ts_policy_sync when /validate rejected a splice. If the
+    relay grant was present AND a relay-free splice of the same policy
+    validates cleanly, the grant is the culprit: downgrade one rung
+    (autogroup:admin dst -> autogroup:member dst -> grant disabled) and
+    return fresh sections for a retry. Returns None when the rejection is
+    not the relay grant's fault (including: grant wasn't there)."""
+    if not _relay_grant_wanted():
+        return None
+    try:
+        probe = _splice_fences(raw, _managed_sections(relay_dst=""))
+    except ValueError:
+        return None
+    code, presp, _ = _ts_acl("POST", "/validate", probe)
+    if code != 200 or '"message"' in presp:
+        return None  # broken with or without the grant — not ours
+    r = load_relay()
+    if not r.get("dst_fallback"):
+        r["dst_fallback"] = True
+        print("peer relay: validate rejected autogroup:admin dst — "
+              "retrying with autogroup:member")
+    else:
+        r["enabled"] = False
+        r["decided_by"] = "auto-validate-reject"
+        pf = r.setdefault("preflight", {})
+        pf.setdefault("reasons", []).append(
+            "The tailnet policy rejected the relay grant: " + resp[:200])
+        pf["eligible"] = False
+        print(f"peer relay: grant disabled after validate reject: {resp[:200]}")
+    save_relay(r)
+    return _managed_sections()
+
+
+def relay_verify():
+    """Best-effort connectivity classification from the controller's own
+    sidecar: are active peers reached via peer relay, directly, or DERP?
+    Cached into .relay.json; the Settings banner clears on peer-relay or
+    direct (direct means the problem this feature exists for is absent)."""
+    sidecar = f"tailscale-{_controller_name() or 'tailarr'}"
+    r = podman("exec", sidecar, "tailscale", "status", "--json", timeout=20)
+    if r.returncode != 0:
+        state, detail = "unknown", (r.stdout + r.stderr).strip()[:200]
+    else:
+        state, detail = _classify_ts_status(r.stdout)
+        if state == "derp":
+            # Old sidecar images (<1.86) can't use peer relays at all —
+            # surface the version so "stuck on derp" is diagnosable.
+            v = podman("exec", sidecar, "tailscale", "version", timeout=15)
+            if v.returncode == 0 and v.stdout.split():
+                detail = f"sidecar tailscale {v.stdout.split()[0]}"
+    rec = load_relay()
+    rec["verified"] = {"state": state, "at": int(time.time()),
+                       "detail": detail}
+    save_relay(rec)
+    return rec["verified"]
+
+
+def _classify_ts_status(raw):
+    """Map a `tailscale status --json` document to a connectivity state."""
+    try:
+        st = json.loads(raw)
+    except ValueError:
+        return "unknown", "unparseable tailscale status"
+    states = set()
+    for p in (st.get("Peer") or {}).values():
+        if not p.get("Active"):
+            continue
+        if p.get("PeerRelay"):
+            states.add("peer-relay")
+        elif p.get("CurAddr"):
+            states.add("direct")
+        elif p.get("Relay"):
+            states.add("derp")
+    for s in ("peer-relay", "direct", "derp"):
+        if s in states:
+            return s, ""
+    return "unknown", "no active peer connections to classify"
+
+
+def status_relay():
+    """Disk-only (cheap to poll); preflight/verify writes refresh it."""
+    platform = host_platform()
+    r = load_relay()
+    pf = r.get("preflight") or {}
+    return {"platform": platform,
+            "applicable": platform == "apple-container",
+            "enabled": r.get("enabled"),
+            "eligible": bool(pf.get("eligible")),
+            "reasons": pf.get("reasons") or [],
+            "counts": pf.get("counts") or {},
+            "grant_active": _relay_grant_wanted(),
+            "dst_fallback": bool(r.get("dst_fallback")),
+            "verified": r.get("verified")
+            or {"state": "unknown", "at": 0, "detail": ""}}
+
+
+def op_relay(do):
+    """POST /api/relay — enable/disable are the user's explicit override
+    (recorded as such); recheck reruns pre-flight + sidecar verification."""
+    if do == "enable":
+        r = load_relay()
+        r["preflight"] = ts_relay_preflight()  # record, but don't gate on it
+        r["enabled"] = True
+        r["decided_by"] = "user"
+        save_relay(r)
+        sync = ts_policy_sync()
+        return {"ok": sync["ok"], "error": sync["error"],
+                "relay": status_relay(), "sync": sync}
+    if do == "disable":
+        r = load_relay()
+        r["enabled"] = False
+        r["decided_by"] = "user"
+        save_relay(r)
+        sync = ts_policy_sync()  # splice drops the grant
+        return {"ok": sync["ok"], "error": sync["error"],
+                "relay": status_relay(), "sync": sync}
+    if do == "recheck":
+        r = load_relay()
+        r["preflight"] = ts_relay_preflight()
+        save_relay(r)
+        relay_verify()
+        sync = ts_policy_sync()  # a newly-eligible auto grant lands now
+        return {"ok": True, "relay": status_relay(), "sync": sync}
+    return {"ok": False, "error": f"unknown do '{do}'"}
 
 
 # =========================================================================
@@ -2953,6 +3221,55 @@ def _host_exec(helper, script, timeout=60):
     return r.returncode, r.stdout + r.stderr
 
 
+_host_platform_cache = None
+
+
+def host_platform():
+    """Platform fact from .host.json: apple-container | linux | unknown.
+    Absence is NOT cached — the controller backfill may land later."""
+    global _host_platform_cache
+    if _host_platform_cache is None:
+        try:
+            with open(HOST_FILE) as f:
+                _host_platform_cache = json.load(f).get("platform") or "unknown"
+        except (OSError, ValueError):
+            return "unknown"
+    return _host_platform_cache
+
+
+def _detect_host_platform():
+    """Backfill .host.json on installs bootstrapped before it existed
+    (fresh installs get it from bootstrap-tailarr.sh). --pid=host alone is
+    enough to read the host's /proc/1/comm — deliberately NOT _host_exec:
+    apple/container guests reject nsenter into PID 1 (EPERM), which is the
+    very platform this needs to detect."""
+    if os.path.exists(HOST_FILE):
+        return
+    name = _controller_name()
+    if not name:
+        return  # dev/CI — retried on next controller start
+    ins = podman("inspect", name, "--format", "{{.ImageName}}", timeout=30)
+    image = ins.stdout.strip()
+    if ins.returncode != 0 or not image:
+        return
+    r = podman("run", "--rm", "--name", "tailarr-hostinfo",
+               "--pid=host", image, "cat", "/proc/1/comm", timeout=60)
+    if r.returncode != 0 or not r.stdout.strip():
+        return
+    pid1 = r.stdout.strip().splitlines()[0].strip()
+    global _host_platform_cache
+    _host_platform_cache = ("apple-container" if pid1 == "vminitd"
+                            else "linux")
+    tmp = HOST_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"platform": _host_platform_cache, "pid1": pid1,
+                   "dt_compatible": "", "detected_at": int(time.time()),
+                   "detected_by": "controller"}, f, indent=2)
+    os.replace(tmp, HOST_FILE)
+    os.chmod(HOST_FILE, 0o600)
+    print(f"host platform backfilled: {_host_platform_cache} (pid1={pid1})")
+
+
 def _sync_mounts_dropin():
     """Order the boot unit after every share's backing mount (drop-in).
 
@@ -2965,6 +3282,8 @@ def _sync_mounts_dropin():
     aren't separate mounts it's satisfied trivially. Written as a drop-in
     so it survives bootstrap re-runs and never clobbers user overrides.
     Best-effort: silently skipped when the host has no systemd unit."""
+    if host_platform() == "apple-container":
+        return  # vminitd init: no systemd, ever — skip the privileged helper
     paths = [PODS_DIR] + sorted(s["host_path"]
                                 for s in load_shares().values())
     # Rendered into a shell script and a space-separated unit setting:
@@ -3134,9 +3453,13 @@ def api_get(path):
                      "version": VERSION,
                      "upgrade_available": bool(latest)
                      and _ver_key(latest) > _ver_key(VERSION),
-                     "tsapi": status_tsapi()}
+                     "tsapi": status_tsapi(),
+                     "host_platform": host_platform(),
+                     "relay": status_relay()}
     if path == "/api/controller/upgrade":
         return 200, upgrade_status()
+    if path == "/api/relay":
+        return 200, status_relay()
     if path == "/api/tsapi":
         return 200, status_tsapi()
     if path == "/api/pods":
@@ -3312,6 +3635,10 @@ def api_post(path, data):
             result = {"ok": False, "error": f"unknown do '{do}'"}
         return (200 if result["ok"] else 400), result
 
+    if path == "/api/relay":
+        result = op_relay((data.get("do") or "").strip())
+        return (200 if result["ok"] else 400), result
+
     # --- credential wizard (Settings) ---
     if path == "/api/tsapi/validate":
         return 200, op_tsapi_validate(data)  # per-capability result body
@@ -3427,6 +3754,18 @@ def _startup_policy_sync():
     reconcile as its natural follow-on."""
     if not _ts_token():
         return
+    # Refresh the peer-relay pre-flight first (auto mode only, daily) so
+    # the sync below picks up a newly-eligible grant in the same pass.
+    try:
+        if host_platform() == "apple-container":
+            r = load_relay()
+            pf = r.get("preflight") or {}
+            if r.get("enabled") is None and \
+                    time.time() - pf.get("checked_at", 0) > RELAY_PREFLIGHT_TTL:
+                r["preflight"] = ts_relay_preflight()
+                save_relay(r)
+    except Exception as e:
+        print(f"relay preflight error: {e}")
     try:
         sync = ts_policy_sync()
         if not sync["ok"]:
@@ -3460,6 +3799,14 @@ def _maintenance_loop():
             ts_reconcile_tags()
         except Exception as e:
             print(f"tag reconcile error: {e}")
+        try:
+            # Relay-in-use is invisible from health checks (DERP still
+            # "works", just slowly) — reclassify periodically so the
+            # Settings banner reflects reality.
+            if _relay_grant_wanted():
+                relay_verify()
+        except Exception as e:
+            print(f"relay verify error: {e}")
         time.sleep(900)
 
 
@@ -3564,4 +3911,7 @@ if __name__ == "__main__":
     # Existing installs get the mounts drop-in on first start after an
     # upgrade, not only when shares next change.
     threading.Thread(target=_sync_mounts_dropin, daemon=True).start()
+    # ...and the host-platform fact backfilled (fresh installs get it from
+    # the bootstrap; the peer-relay offer depends on it).
+    threading.Thread(target=_detect_host_platform, daemon=True).start()
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()
