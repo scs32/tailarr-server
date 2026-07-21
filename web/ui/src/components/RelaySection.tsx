@@ -229,7 +229,10 @@ export function RelaySection({
           <p style={{ color: "var(--muted)", margin: 0, flex: 1, minWidth: 260 }}>
             When pods can't connect directly, traffic falls back to
             Tailscale's shared DERP servers — slow. A peer relay routes that
-            traffic through one of <em>your</em> devices instead.
+            traffic through one of <em>your</em> devices instead. This speeds
+            up access from your tailnet devices only — pods made public
+            always serve internet visitors through Tailscale Funnel's own
+            infrastructure, unaffected by relays.
           </p>
           <VerifiedChip status={status} />
           <button
