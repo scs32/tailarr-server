@@ -39,7 +39,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.15.0"
+VERSION = "0.15.1"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -2364,12 +2364,32 @@ def _op_relay_add(data):
     on linux hosts; apple/container guests can't nsenter, install-mac.sh
     covers the Mac), otherwise the command is returned for the user to run.
     Entries start pending and graduate to active when relay_verify() sees
-    traffic through them."""
+    traffic through them.
+
+    {host: true} means "the machine hosting Tailarr" with no IP given —
+    the controller resolves the address itself via host-exec (`tailscale
+    ip -4` on the host), so the user never needs to know it."""
     ip = (data.get("ip") or "").strip()
     name = (data.get("name") or "").strip() or ip
+    if data.get("host") and not ip:
+        rc, out = _host_exec("tailarr-relay-ip", "tailscale ip -4")
+        got = (out or "").strip().splitlines()
+        if rc == 0 and got and re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}",
+                                            got[0].strip()):
+            ip = got[0].strip()
+            name = name or "tailarr-host"
+            data = dict(data, try_host=True)  # we're on the host — enable it
+        else:
+            return {"ok": False, "relay": status_relay(),
+                    "error": "Could not find the host's tailnet address — "
+                             "is Tailscale installed on the machine hosting "
+                             "Tailarr? On a Mac (apple/container), pick the "
+                             "Mac from the device list instead; "
+                             "install-mac.sh already enabled it."}
     if not re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", ip):
         return {"ok": False, "relay": status_relay(),
-                "error": "A tailnet IPv4 address is required."}
+                "error": "Pick a device from the list or enter its tailnet "
+                         "IPv4 address (100.x.y.z)."}
     r = load_relay()
     port = int(r.get("port") or RELAY_DEFAULT_PORT)
     relays = r.setdefault("relays", {})

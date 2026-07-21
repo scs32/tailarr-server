@@ -40,15 +40,16 @@ function AddRelayDialog({
 }: {
   status: RelayStatus;
   busy: boolean;
-  onAdd: (a: RelayAction) => void;
+  onAdd: (a: RelayAction) => Promise<string | null>;
   onClose: () => void;
 }) {
   const [devices, setDevices] = useState<RelayDevice[] | null>(null);
   const [devErr, setDevErr] = useState<string | null>(null);
+  const [addErr, setAddErr] = useState<string | null>(null);
   const [picked, setPicked] = useState<RelayDevice | null>(null);
   const [manualIp, setManualIp] = useState("");
   const [manualName, setManualName] = useState("");
-  const [tryHost, setTryHost] = useState(false);
+  const [hostMode, setHostMode] = useState(false);
 
   useEffect(() => {
     api
@@ -72,6 +73,12 @@ function AddRelayDialog({
   const name = picked
     ? picked.hostname || picked.name
     : manualName.trim() || manualIp.trim();
+  // Three ways to identify the relay: the Tailarr host (controller finds
+  // the address itself), a device from the list, or a typed IP.
+  const ready = hostMode || !!ip;
+  const action: RelayAction = hostMode
+    ? { do: "add-relay", host: true }
+    : { do: "add-relay", ip, name };
 
   return (
     <div className="scrim" onClick={busy ? undefined : onClose}>
@@ -83,9 +90,30 @@ function AddRelayDialog({
             the tailnet policy for you; the device itself must run one
             command (below) before it can actually relay.
           </p>
+          <label
+            className="row card"
+            style={{ cursor: "pointer", marginBottom: "var(--sp-3)" }}
+          >
+            <input
+              type="checkbox"
+              checked={hostMode}
+              onChange={(e) => {
+                setHostMode(e.target.checked);
+                if (e.target.checked) setPicked(null);
+              }}
+            />
+            <div>
+              <div className="row__title">The machine hosting Tailarr</div>
+              <div className="row__meta">
+                Finds its address and enables it automatically (Linux hosts;
+                on a Mac install-mac.sh already did this — pick the Mac
+                below instead).
+              </div>
+            </div>
+          </label>
           {devices === null ? (
             <p style={{ color: "var(--muted)" }}>Loading tailnet devices…</p>
-          ) : (
+          ) : hostMode ? null : (
             <>
               {devErr && <Alert kind="err">{devErr}</Alert>}
               {candidates.length > 0 && (
@@ -140,44 +168,35 @@ function AddRelayDialog({
                   />
                 </Field>
               )}
-              <label
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                  marginTop: "var(--sp-2)",
-                  fontSize: "var(--fs-xs)",
-                  color: "var(--muted)",
-                  cursor: "pointer",
-                  userSelect: "none",
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={tryHost}
-                  onChange={(e) => setTryHost(e.target.checked)}
-                />
-                This device is the machine hosting Tailarr — try to enable it
-                automatically
-              </label>
               <p className="field__hint" style={{ margin: "var(--sp-2) 0 0" }}>
-                Automatic enablement works when Tailarr's host runs Tailscale
-                (Linux). For a Mac, install-mac.sh already did it — or run{" "}
-                <code>{status.command}</code> on the device yourself.
+                A picked device must run{" "}
+                <code>{status.command}</code> once before it can relay —
+                it shows as pending until traffic proves it.
               </p>
             </>
           )}
+          {addErr && (
+            <div style={{ marginTop: "var(--sp-3)" }}>
+              <Alert kind="err">{addErr}</Alert>
+            </div>
+          )}
         </div>
         <div className="dialog__foot">
+          {!ready && !busy && (
+            <span className="field__hint" style={{ marginRight: "auto" }}>
+              Tick the host option, pick a device, or enter an IP.
+            </span>
+          )}
           <button className="btn btn--ghost" disabled={busy} onClick={onClose}>
             Cancel
           </button>
           <button
             className={"btn btn--primary" + (busy ? " btn--loading" : "")}
-            disabled={busy || !ip}
-            onClick={() =>
-              onAdd({ do: "add-relay", ip, name, try_host: tryHost })
-            }
+            disabled={busy || !ready}
+            onClick={async () => {
+              setAddErr(null);
+              setAddErr(await onAdd(action));
+            }}
           >
             {busy && <SpinnerIcon className="btn-icon" />}
             Add relay
@@ -195,7 +214,7 @@ export function RelaySection({
 }: {
   status: RelayStatus | null;
   busy: boolean;
-  onAct: (a: RelayAction) => Promise<boolean>;
+  onAct: (a: RelayAction) => Promise<string | null>; // error text, null = ok
 }) {
   const [showAdd, setShowAdd] = useState(false);
 
@@ -210,7 +229,10 @@ export function RelaySection({
           <p style={{ color: "var(--muted)", margin: 0, flex: 1, minWidth: 260 }}>
             When pods can't connect directly, traffic falls back to
             Tailscale's shared DERP servers — slow. A peer relay routes that
-            traffic through one of <em>your</em> devices instead.
+            traffic through one of <em>your</em> devices instead. This speeds
+            up access from your tailnet devices only — pods made public
+            always serve internet visitors through Tailscale Funnel's own
+            infrastructure, unaffected by relays.
           </p>
           <VerifiedChip status={status} />
           <button
@@ -374,7 +396,9 @@ export function RelaySection({
           status={status}
           busy={busy}
           onAdd={async (a) => {
-            if (await onAct(a)) setShowAdd(false);
+            const err = await onAct(a);
+            if (!err) setShowAdd(false);
+            return err;
           }}
           onClose={() => setShowAdd(false)}
         />

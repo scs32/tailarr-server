@@ -321,6 +321,7 @@ export interface RelayAction {
   mode?: "global" | "per-pod";
   ip?: string;
   name?: string;
+  host?: boolean; // "the machine hosting Tailarr" — controller finds the IP
   try_host?: boolean;
   id?: string;
   pod?: string;

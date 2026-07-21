@@ -38,23 +38,25 @@ export function Network() {
     return () => clearInterval(t);
   }, [refresh]);
 
+  // Returns error text (null = success) so the add dialog can show
+  // failures INSIDE itself — the page FlashView sits behind the scrim.
   const relayAct = useCallback(
-    async (a: RelayAction): Promise<boolean> => {
+    async (a: RelayAction): Promise<string | null> => {
       setRelayBusy(true);
       try {
         const r = await api.relayAction(a);
         setRelay(r.relay);
-        if (!r.ok || r.error)
-          show({ kind: "err", text: r.error ?? "Request failed." });
+        const err = !r.ok || r.error ? (r.error ?? "Request failed.") : null;
+        if (err) show({ kind: "err", text: err });
         else if (a.do === "add-relay")
           show({
             kind: "ok",
             text: "Relay added. It activates once traffic flows through it.",
           });
-        return r.ok && !r.error;
+        return err;
       } catch (e) {
         show({ kind: "err", text: String(e) });
-        return false;
+        return String(e);
       } finally {
         setRelayBusy(false);
       }

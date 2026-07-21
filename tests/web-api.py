@@ -1126,6 +1126,24 @@ try:
     check(code == 200 and e7["status"] == "active" and e7["command_run"],
           "try_host success marks the relay active")
 
+    # host:true with no ip — the controller resolves the host's own
+    # tailnet address via host-exec (v0.15.1 fix: the dialog's host
+    # option needs no IP from the user).
+    app._host_exec = lambda helper, script, timeout=60: (
+        (0, "100.99.0.8\n") if "ip -4" in script else (0, "ok"))
+    code, data = post("/api/relay", {"do": "add-relay", "host": True})
+    e8 = [e for e in data["relay"]["relays"] if e["id"] == "100.99.0.8"][0]
+    check(code == 200 and e8["status"] == "active"
+          and e8["name"] == "tailarr-host",
+          "host:true resolves the host IP via host-exec and enables it")
+    app._host_exec = lambda helper, script, timeout=60: (-1, "no host")
+    code, data = post("/api/relay", {"do": "add-relay", "host": True})
+    check(code == 400 and "install-mac.sh" in data["error"],
+          "host:true fails helpfully when the host has no tailscale")
+    code, data = post("/api/relay", {"do": "add-relay", "ip": ""})
+    check(code == 400 and "Pick a device" in data["error"],
+          "an empty add is a clear 400, never a silent no-op")
+
     # Clearing the global selection restores the legacy autogroup grant.
     code, data = post("/api/relay", {"do": "set-global", "id": ""})
     secs = app._managed_sections()
