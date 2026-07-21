@@ -1068,6 +1068,57 @@ finally:
     app.podman = _real_podman5
     app._controller_name = _real_ctrl5
 
+# --- stats: /api/stats per-pod live resources + shared collector ---------
+_real_stats_podman = app.podman
+_real_stats_deployed = app.deployed_services
+
+
+def _stats_podman(*a, **kw):
+    if a and a[0] == "stats":
+        rows = [
+            {"name": "nginx", "cpu_percent": "12.5%",
+             "mem_usage": "128MiB / 512MiB"},
+            {"name": "tailscale-nginx", "cpu_percent": "0.4%",
+             "mem_usage": "20MiB / 4GiB"},
+        ]
+        return types.SimpleNamespace(returncode=0, stdout=json.dumps(rows),
+                                     stderr="")
+    if a and a[0] == "ps":
+        rows = [{"Names": ["nginx"], "State": "running", "ExitCode": 0},
+                {"Names": ["tailscale-nginx"], "State": "running",
+                 "ExitCode": 0}]
+        return types.SimpleNamespace(returncode=0, stdout=json.dumps(rows),
+                                     stderr="")
+    return types.SimpleNamespace(returncode=1, stdout="", stderr="")
+
+
+try:
+    app.podman = _stats_podman
+    app.deployed_services = lambda: ["nginx"]
+    code, data = get("/api/stats")
+    check(code == 200, "GET /api/stats returns 200")
+    check(data["totals"]["pods"] == 1 and data["totals"]["running"] == 1,
+          "stats totals count the running pod")
+    pod = data["pods"][0]
+    check(pod["name"] == "nginx", "stats lists the deployed pod")
+    check(abs(pod["cpu_percent"] - 12.9) < 1e-6,
+          "pod CPU sums app + sidecar (12.5 + 0.4)")
+    check(pod["mem_bytes"] == (128 + 20) * (1 << 20),
+          "pod memory sums app + sidecar (MiB parsed to bytes)")
+    check(pod["mem_limit_bytes"] == 512 * (1 << 20),
+          "pod memory limit comes from the app container's cgroup limit")
+    # /metrics must reuse the same collector — identical numbers, no drift.
+    with urllib.request.urlopen(BASE + "/metrics") as r:
+        metrics = r.read().decode()
+    check('tailarr_container_cpu_percent{container="nginx"} 12.5' in metrics,
+          "/metrics emits per-container CPU from the shared collect_stats()")
+    check('tailarr_container_mem_bytes{container="nginx"} %d'
+          % (128 * (1 << 20)) in metrics,
+          "/metrics emits per-container memory from the shared collector")
+finally:
+    app.podman = _real_stats_podman
+    app.deployed_services = _real_stats_deployed
+
 catsrv.shutdown()
 srv.shutdown()
 print("WEB API TEST PASSED")

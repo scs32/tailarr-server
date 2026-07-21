@@ -39,7 +39,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.13.0"
+VERSION = "0.14.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -2326,6 +2326,102 @@ def op_catalog_set(key, enabled):
     return {"ok": True, "key": key, "error": None}
 
 
+def _parse_mem(val):
+    """A podman-stats memory field -> bytes. Accepts a number, a bare size
+    ("4GB"), or a usage/limit pair ("123.4MB / 4GB") — takes the left side."""
+    if isinstance(val, (int, float)):
+        return int(val)
+    if not isinstance(val, str):
+        return 0
+    s = val.split("/")[0].strip()
+    units = {"kB": 1e3, "KiB": 1024, "MB": 1e6, "MiB": 1 << 20,
+             "GB": 1e9, "GiB": 1 << 30, "B": 1}
+    for u, mult in units.items():
+        if s.endswith(u):
+            try:
+                return int(float(s[: -len(u)]) * mult)
+            except ValueError:
+                return 0
+    try:
+        return int(float(s))
+    except ValueError:
+        return 0
+
+
+def collect_stats():
+    """One structured, side-effect-free snapshot of live per-container
+    resources from a single `podman stats` pass. The SINGLE source for both
+    /metrics (Prometheus text) and /api/stats (SPA JSON) — kept pure so a
+    future maintenance-loop sampler can call it on a timer and append to a
+    ring buffer without duplicating this parsing (CLAUDE.md backlog item 9).
+
+    Returns {"at": epoch, "containers": {name: {"cpu_percent": float,
+    "mem_bytes": int, "mem_limit_bytes": int}}}."""
+    r = podman("stats", "--no-stream", "--format", "json", timeout=30)
+    containers = {}
+    if r.returncode == 0:
+        try:
+            rows = json.loads(r.stdout or "[]")
+        except ValueError:
+            rows = []
+        for row in rows:
+            cname = row.get("name") or row.get("Name") or ""
+            if not cname:
+                continue
+            cpu = str(row.get("cpu_percent") or row.get("CPUPerc")
+                      or "0").rstrip("%") or "0"
+            try:
+                cpu = float(cpu)
+            except ValueError:
+                cpu = 0.0
+            raw_mem = row.get("mem_usage") or row.get("MemUsage") or 0
+            # the "/ 4GB" side of MemUsage, when present, is the cgroup limit
+            limit = (_parse_mem(raw_mem.split("/", 1)[1])
+                     if isinstance(raw_mem, str) and "/" in raw_mem else 0)
+            containers[cname] = {"cpu_percent": cpu,
+                                 "mem_bytes": _parse_mem(raw_mem),
+                                 "mem_limit_bytes": limit}
+    return {"at": int(time.time()), "containers": containers}
+
+
+def status_stats():
+    """Per-pod live resource view for the Stats page: CPU% and memory for
+    each pod's app container + its tailscale-<svc> sidecar, from one podman
+    stats pass, plus fleet totals.
+
+    LIVE ONLY today (no stored history). The snapshot shape (an `at`
+    timestamp + per-pod gauges) is deliberately history-ready: a future
+    sampler can persist collect_stats() into a ring buffer and this endpoint
+    can grow a `series` field with no client rewrite (CLAUDE.md item 9)."""
+    snap = collect_stats()
+    cs = snap["containers"]
+    ps = ps_all()
+    pods, tot_cpu, tot_mem = [], 0.0, 0
+    for name in deployed_services():
+        app_c = cs.get(name)
+        side = cs.get("tailscale-" + name)
+        cpu = round((app_c or {}).get("cpu_percent", 0.0)
+                    + (side or {}).get("cpu_percent", 0.0), 2)
+        mem = (app_c or {}).get("mem_bytes", 0) + (side or {}).get("mem_bytes", 0)
+        tot_cpu, tot_mem = tot_cpu + cpu, tot_mem + mem
+        pods.append({
+            "name": name,
+            "state": pod_state(name, ps),
+            "cpu_percent": cpu,
+            "mem_bytes": mem,
+            "mem_limit_bytes": (app_c or {}).get("mem_limit_bytes", 0),
+            "app": app_c,
+            "sidecar": side,
+        })
+    return {"at": snap["at"],
+            "pods": pods,
+            "totals": {"cpu_percent": round(tot_cpu, 2),
+                       "mem_bytes": tot_mem,
+                       "pods": len(pods),
+                       "running": sum(1 for p in pods
+                                      if p["state"] == "running")}}
+
+
 def render_metrics():
     """Prometheus exposition for the fleet: state, flags, backups, and live
     CPU/mem from one `podman stats` pass (app container + sidecar per pod).
@@ -2359,48 +2455,21 @@ def render_metrics():
             lines.append(
                 f'tailarr_pod_backup_age_seconds{{pod="{name}"}} {int(age)}')
     # live resources: one stats pass covers app containers and sidecars
-    r = podman("stats", "--no-stream", "--format", "json", timeout=30)
-    if r.returncode == 0:
-        try:
-            rows = json.loads(r.stdout or "[]")
-        except ValueError:
-            rows = []
-        if rows:
-            lines += [
-                "# HELP tailarr_container_cpu_percent live CPU percent.",
-                "# TYPE tailarr_container_cpu_percent gauge",
-                "# HELP tailarr_container_mem_bytes live memory usage.",
-                "# TYPE tailarr_container_mem_bytes gauge",
-            ]
-        for row in rows:
-            cname = row.get("name") or row.get("Name") or ""
-            if not cname:
-                continue
-            cpu = str(row.get("cpu_percent") or row.get("CPUPerc")
-                      or "0").rstrip("%") or "0"
-            mem = row.get("mem_usage") or row.get("MemUsage") or 0
-            if isinstance(mem, str):  # e.g. "123.4MB / 4GB"
-                mem = mem.split("/")[0].strip()
-                units = {"kB": 1e3, "KiB": 1024, "MB": 1e6, "MiB": 1 << 20,
-                         "GB": 1e9, "GiB": 1 << 30, "B": 1}
-                for u, mult in units.items():
-                    if mem.endswith(u):
-                        try:
-                            mem = float(mem[: -len(u)]) * mult
-                        except ValueError:
-                            mem = 0
-                        break
-                else:
-                    mem = 0
-            try:
-                lines.append(
-                    f'tailarr_container_cpu_percent{{container="{cname}"}} '
-                    f'{float(cpu)}')
-                lines.append(
-                    f'tailarr_container_mem_bytes{{container="{cname}"}} '
-                    f'{int(float(mem))}')
-            except (TypeError, ValueError):
-                continue
+    containers = collect_stats()["containers"]
+    if containers:
+        lines += [
+            "# HELP tailarr_container_cpu_percent live CPU percent.",
+            "# TYPE tailarr_container_cpu_percent gauge",
+            "# HELP tailarr_container_mem_bytes live memory usage.",
+            "# TYPE tailarr_container_mem_bytes gauge",
+        ]
+    for cname, c in containers.items():
+        lines.append(
+            f'tailarr_container_cpu_percent{{container="{cname}"}} '
+            f'{c["cpu_percent"]}')
+        lines.append(
+            f'tailarr_container_mem_bytes{{container="{cname}"}} '
+            f'{c["mem_bytes"]}')
     return "\n".join(lines) + "\n"
 
 
@@ -3476,6 +3545,8 @@ def api_get(path):
         return 200, {"network": status_network()}
     if path == "/api/monitor":
         return 200, status_monitor()
+    if path == "/api/stats":
+        return 200, status_stats()
     if path == "/api/users":
         return 200, status_users()
     if path == "/api/tokens":

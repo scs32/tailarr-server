@@ -8,6 +8,7 @@ import {
   ShareIcon,
   NetworkIcon,
   PulseIcon,
+  ChartIcon,
   UsersIcon,
   GearIcon,
   TailarrMark,
@@ -21,6 +22,7 @@ const NAV = [
   { to: "/network", label: "Network", icon: NetworkIcon },
   { to: "/users", label: "Users", icon: UsersIcon },
   { to: "/monitor", label: "Monitor", icon: PulseIcon },
+  { to: "/stats", label: "Stats", icon: ChartIcon },
 ];
 
 export function Sidebar() {

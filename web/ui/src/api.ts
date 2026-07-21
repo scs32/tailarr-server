@@ -22,6 +22,7 @@ import type {
   Share,
   ShareResult,
   Source,
+  StatsSnapshot,
   TokensStatus,
   TsApiCredential,
   TsApiProbe,
@@ -146,6 +147,8 @@ export const api = {
     postJSON<ActionResult>(`/api/network/${pod}`, body),
 
   monitor: () => getJSON<MonitorStatus>("/api/monitor"),
+
+  stats: () => getJSON<StatsSnapshot>("/api/stats"),
 
   users: () => getJSON<UsersStatus>("/api/users"),
 

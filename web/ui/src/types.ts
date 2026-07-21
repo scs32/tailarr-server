@@ -348,3 +348,34 @@ export interface InstallRequest {
   shares?: string[];
   authkey?: string;
 }
+
+// GET /api/stats — one LIVE snapshot of per-pod resources (app container +
+// tailscale sidecar) from a single podman stats pass. `at` is an epoch; the
+// endpoint is history-ready (a future `series` field), so this shape won't
+// change when trends land. See CLAUDE.md backlog item 9.
+export interface ContainerStat {
+  cpu_percent: number;
+  mem_bytes: number;
+  mem_limit_bytes: number;
+}
+
+export interface PodStat {
+  name: string;
+  state: PodState;
+  cpu_percent: number; // app + sidecar
+  mem_bytes: number; // app + sidecar
+  mem_limit_bytes: number; // app container's cgroup limit, 0 if unbounded
+  app: ContainerStat | null; // null when the container isn't running
+  sidecar: ContainerStat | null;
+}
+
+export interface StatsSnapshot {
+  at: number;
+  pods: PodStat[];
+  totals: {
+    cpu_percent: number;
+    mem_bytes: number;
+    pods: number;
+    running: number;
+  };
+}
