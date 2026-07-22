@@ -6,7 +6,7 @@ import { ChipPicker } from "../components/ChipPicker";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { FlashView, useFlash } from "../components/Flash";
 import { Field } from "../components/Form";
-import { SpinnerIcon } from "../components/Icons";
+import { BellIcon, SpinnerIcon } from "../components/Icons";
 import { TsApiWizard } from "../components/TsApiWizard";
 
 function ago(iso: string): string {
@@ -37,6 +37,14 @@ export function Users() {
   const [adoptOpen, setAdoptOpen] = useState(false);
   const [adoptId, setAdoptId] = useState("");
   const [adopting, setAdopting] = useState(false);
+  const [notify, setNotify] = useState<{
+    id: string;
+    url: string;
+    user: string;
+    password: string;
+    token: string;
+    topics: string[];
+  } | null>(null);
   const { flash, show, clear } = useFlash();
 
   const refresh = useCallback(async () => {
@@ -155,6 +163,31 @@ export function Users() {
       const r = await api.person({ do: "assign", id: uid, node });
       if (!r.ok) show({ kind: "err", text: r.error ?? "Assign failed." });
       await refresh();
+    } finally {
+      setBusyKey("");
+    }
+  }
+
+  async function showNotify(id: string) {
+    if (notify?.id === id) {
+      setNotify(null);
+      return;
+    }
+    setBusyKey(`${id}:notify`);
+    try {
+      const r = await api.personNotify(id);
+      if (r.ok) {
+        setNotify({
+          id,
+          url: r.url ?? "",
+          user: r.user ?? "",
+          password: r.password ?? "",
+          token: r.token ?? "",
+          topics: r.topics ?? [],
+        });
+      } else {
+        show({ kind: "err", text: r.error ?? "Couldn't issue credentials." });
+      }
     } finally {
       setBusyKey("");
     }
@@ -306,6 +339,24 @@ export function Users() {
                     {busyKey === `${p.id}:reissue` && <SpinnerIcon className="btn-icon" />}
                     Reissue key
                   </button>
+                  {status.ntfy && (
+                    <button
+                      className={
+                        "btn btn--ghost btn--sm" +
+                        (busyKey === `${p.id}:notify` ? " btn--loading" : "")
+                      }
+                      disabled={!!busyKey}
+                      title="Show this user's notification credentials (ntfy app / Tailarr app)"
+                      onClick={() => showNotify(p.id)}
+                    >
+                      {busyKey === `${p.id}:notify` ? (
+                        <SpinnerIcon className="btn-icon" />
+                      ) : (
+                        <BellIcon className="btn-icon" />
+                      )}
+                      Notifications
+                    </button>
+                  )}
                   <button
                     className="btn btn--ghost btn--sm"
                     disabled={!!busyKey}
@@ -334,6 +385,40 @@ export function Users() {
                         {deviceMeta(u) && ` · ${deviceMeta(u)}`}
                       </div>
                     ))}
+                  </div>
+                )}
+                {notify?.id === p.id && (
+                  <div
+                    className="card"
+                    style={{ marginTop: "var(--sp-3)", padding: "var(--sp-3)" }}
+                  >
+                    <div className="row__title">Notification setup</div>
+                    <div className="row__meta">
+                      Topics follow their services automatically:{" "}
+                      {notify.topics.length > 0 ? (
+                        <code>{notify.topics.join(", ")}</code>
+                      ) : (
+                        <em>none yet — grant a service first</em>
+                      )}
+                    </div>
+                    <div className="row__meta" style={{ marginTop: "var(--sp-2)" }}>
+                      Server <code>{notify.url || "(public endpoint off)"}</code>
+                      {" · "}user <code>{notify.user}</code>
+                      {" / "}
+                      <code>{notify.password}</code> (iOS ntfy app)
+                      {" · "}token <code>{notify.token}</code> (Android/web +
+                      Tailarr app)
+                    </div>
+                    <div className="row__meta" style={{ marginTop: "var(--sp-2)" }}>
+                      Tailarr app config:{" "}
+                      <code>
+                        {JSON.stringify({
+                          url: notify.url,
+                          token: notify.token,
+                          topics: notify.topics,
+                        })}
+                      </code>
+                    </div>
                   </div>
                 )}
               </div>

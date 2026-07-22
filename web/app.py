@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.19.0"
+VERSION = "0.20.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -1183,13 +1183,16 @@ def status_users():
                   for uid, p in people.items()]
     people_out.sort(key=lambda p: p["name"].lower())
     by_uid = {p["id"]: p for p in people_out}
+    ntfy_on = bool(ntfy_client.load_conf())
     if not _ts_token():
         return {"configured": False, "error": None, "users": [],
-                "people": people_out, "services": services}
+                "people": people_out, "services": services,
+                "ntfy": ntfy_on}
     code, data = ts_api("GET", "/tailnet/-/devices")
     if code != 200:
         return {"configured": True, "error": f"devices API: {data}",
-                "users": [], "people": people_out, "services": services}
+                "users": [], "people": people_out, "services": services,
+                "ntfy": ntfy_on}
     nicks = load_user_nicks()
     users = []
     for d in data.get("devices", []):
@@ -1216,7 +1219,10 @@ def status_users():
     for p in people_out:
         p["devices"].sort(key=lambda u: u["hostname"].lower())
     return {"configured": True, "error": None, "users": users,
-            "people": people_out, "services": services}
+            "people": people_out, "services": services,
+            # Person cards show their notification handout only when
+            # the ntfy system pod is set up.
+            "ntfy": ntfy_on}
 
 
 def op_user_nick(node_id, nickname):
@@ -1395,6 +1401,7 @@ def op_person(data):
                     "error": f"Created, but the policy sync failed "
                              f"({sync['error']}) — reissue once fixed."}
         mint = ts_mint_person_key(uid, people[uid])
+        _ntfy_person_sync_bg(uid)  # notifications are part of the person
         return {"ok": True, "id": uid, "key": mint.get("key", ""),
                 "error": mint.get("error")}
     uid = (data.get("id") or "").strip()
@@ -1445,6 +1452,10 @@ def op_person(data):
                     errors.append(f"{d.get('hostname', '?')}: {resp}")
         if _ts_token():
             ts_policy_sync()  # drops the u- tagOwner line
+        try:
+            _ntfy_person_drop(uid)  # their notification account too
+        except Exception as e:  # noqa: BLE001 — best-effort cleanup
+            errors.append(f"ntfy: {e}")
         return {"ok": True, "id": uid,
                 "error": ("; ".join(errors)[:300] or None),
                 "name": person.get("name", "")}
@@ -1481,6 +1492,7 @@ def op_person_access(uid, service, allow):
                              {"tags": new})
         if code2 != 200:
             errors.append(f"{d.get('hostname', '?')}: {resp}")
+    _ntfy_person_sync_bg(uid)  # mirror the badge into topic grants
     return {"ok": True, "id": uid,
             "error": ("; ".join(errors)[:300] or None)}
 
@@ -1505,6 +1517,137 @@ def ts_reconcile_people():
         new = _person_device_tags(tags, people[uid])
         if new != sorted(tags):
             ts_api("POST", f"/device/{d['nodeId']}/tags", {"tags": new})
+
+
+def _ntfy_person_topics(person):
+    """The ntfy topics a person may read, mirrored from their badges:
+    tlr-media-<svc> per service; the server badge (admin-ish) also
+    opens the ops topic."""
+    badges = person.get("badges") or []
+    topics = [ntfy_client.MEDIA_TOPIC_PREFIX + s for s in badges
+              if s != SERVER_SERVICE]
+    if SERVER_SERVICE in badges:
+        topics.append(ntfy_client.OPS_TOPIC)
+    return sorted(topics)
+
+
+def _ntfy_person_sync(uid, person, pod=None):
+    """Ensure a person's ntfy account (u-<uid>) exists with read grants
+    mirroring their badges. Check-then-act like every other ntfy
+    provisioning path; grants are reset+re-issued only when the badge
+    set drifted from what was last synced. Returns (entry, error);
+    entry is the credential dict stored under .ntfy.json users."""
+    conf = ntfy_client.load_conf()
+    if not conf:
+        return None, "ntfy is not configured"
+    if pod is None:
+        net = _discover_ntfy(fresh=True)
+        if not net:
+            return None, "No ntfy pod found."
+        pod = net["name"]
+    user = f"u-{uid}"
+    saved = (conf.get("users") or {}).get(uid) or {}
+    listed = _ntfy_cli(pod, "user", "list")
+    if listed.returncode != 0:
+        return None, ("ntfy CLI unavailable: "
+                      + (listed.stdout + listed.stderr).strip()[-200:])
+    exists = f"user {user}" in (listed.stdout + listed.stderr)
+    password = (saved.get("password") if exists else None) \
+        or secrets.token_urlsafe(24)
+    if not exists:
+        r = _ntfy_cli(pod, "user", "add", "--role=user", user,
+                      env={"NTFY_PASSWORD": password})
+        if r.returncode != 0 and "exists" not in (r.stdout + r.stderr):
+            return None, ("could not create the account: "
+                          + (r.stdout + r.stderr).strip()[-200:])
+    elif not saved.get("password"):
+        r = _ntfy_cli(pod, "user", "change-pass", user,
+                      env={"NTFY_PASSWORD": password})
+        if r.returncode != 0:
+            return None, ("could not reset the password: "
+                          + (r.stdout + r.stderr).strip()[-200:])
+    token = saved.get("token", "") if exists else ""
+    if not token:
+        r = _ntfy_cli(pod, "token", "add", user)
+        m = re.search(r"tk_[A-Za-z0-9_]+", r.stdout + r.stderr)
+        if r.returncode != 0 or not m:
+            return None, ("could not mint a token: "
+                          + (r.stdout + r.stderr).strip()[-200:])
+        token = m.group(0)
+    badges = sorted(person.get("badges") or [])
+    if not exists or sorted(saved.get("services") or []) != badges:
+        _ntfy_cli(pod, "access", "--reset", user)
+        for t in _ntfy_person_topics(person):
+            r = _ntfy_cli(pod, "access", user, t, "read")
+            if r.returncode != 0:
+                return None, (f"could not grant {t}: "
+                              + (r.stdout + r.stderr).strip()[-200:])
+    entry = {"user": user, "password": password, "token": token,
+             "services": badges}
+    conf.setdefault("users", {})[uid] = entry
+    ntfy_client.save_conf(conf)
+    return entry, None
+
+
+def _ntfy_person_sync_bg(uid):
+    """Fire-and-forget badge->topic mirror (person add / badge flips):
+    ntfy trouble must never fail the tailnet operation that worked."""
+    if not ntfy_client.load_conf():
+        return
+    def run():
+        people = load_people()
+        if uid in people:
+            _ntfy_person_sync(uid, people[uid])
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _ntfy_person_drop(uid):
+    """Delete a person's ntfy account (tokens + grants die with it)."""
+    conf = ntfy_client.load_conf()
+    if not conf or uid not in (conf.get("users") or {}):
+        return
+    net = _discover_ntfy(fresh=True)
+    if net:
+        _ntfy_cli(net["name"], "user", "del", f"u-{uid}")
+    conf["users"].pop(uid, None)
+    ntfy_client.save_conf(conf)
+
+
+def _ntfy_people_pass():
+    """Maintenance-loop mirror: converge every person's ntfy account to
+    their badges (covers missed flips and ntfy-set-up-after-users), and
+    drop accounts for people who no longer exist."""
+    conf = ntfy_client.load_conf()
+    if not conf:
+        return
+    people = load_people()
+    saved = conf.get("users") or {}
+    for uid, p in people.items():
+        s = saved.get(uid)
+        if not s or sorted(s.get("services") or []) != \
+                sorted(p.get("badges") or []):
+            _ntfy_person_sync(uid, p)
+    for uid in [u for u in saved if u not in people]:
+        _ntfy_person_drop(uid)
+
+
+def op_person_notify(uid):
+    """The person-card handout: idempotent issue of their notification
+    credentials (auto-created at Add User; this converges + re-shows).
+    Like the admin alerts card, the token/password ARE the handout —
+    returning them is the point."""
+    people = load_people()
+    if uid not in people:
+        return {"ok": False, "error": "Unknown user."}
+    entry, err = _ntfy_person_sync(uid, people[uid])
+    if err:
+        return {"ok": False, "error": err}
+    conf = ntfy_client.load_conf() or {}
+    return {"ok": True, "error": None,
+            "url": conf.get("public_url", ""),
+            "user": entry["user"], "password": entry["password"],
+            "token": entry["token"],
+            "topics": _ntfy_person_topics(people[uid])}
 
 
 # =========================================================================
@@ -5042,6 +5185,11 @@ def api_post(path, data):
                                   bool(data.get("allow")))
         return (200 if result["ok"] else 400), result
 
+    m = re.fullmatch(r"/api/people/([a-f0-9]+)/notifications", path)
+    if m:
+        result = op_person_notify(m.group(1))
+        return (200 if result["ok"] else 400), result
+
     if path == "/api/tokens":
         do = data.get("do") or ""
         if do == "create":
@@ -5284,6 +5432,11 @@ def _maintenance_loop():
             ts_reconcile_people()
         except Exception as e:
             print(f"people reconcile error: {e}")
+        try:
+            # And the same for their ntfy topic grants (+ orphan cleanup).
+            _ntfy_people_pass()
+        except Exception as e:
+            print(f"ntfy people pass error: {e}")
         try:
             # Relay-in-use is invisible from health checks (DERP still
             # "works", just slowly) — reclassify periodically so the

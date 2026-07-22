@@ -1824,6 +1824,11 @@ def _fake_people_api(method, path, body=None):
 app._ts_token = lambda: "dummy-test-token"
 app.ts_api = _fake_people_api
 app.ts_policy_sync = lambda: {"ok": True, "changed": False, "error": None}
+# The fire-and-forget badge->topic mirror would race the recorders below
+# (its thread resolves app.podman at call time); the mirror behavior is
+# tested synchronously through /api/people/<uid>/notifications instead.
+_real_sync_bg = app._ntfy_person_sync_bg
+app._ntfy_person_sync_bg = lambda uid: None
 try:
     code, data = post("/api/people", {"do": "add", "name": "Dave"})
     check(code == 200 and data["ok"]
@@ -1880,16 +1885,55 @@ try:
     check("tag:tailarr-can-apitest" in d2["tags"],
           "reconcile re-applies the person's badges to drifted devices")
 
+    # --- users release 2: notifications mirror onto the person ---
+    app.ntfy_client.save_conf({
+        "version": 1, "pod": "ntfy",
+        "public_url": "https://ntfy.test.ts.net",
+        "admin": {"user": "tailarr", "password": "x", "token": "tk_a"},
+        "publisher": {"user": "tailarr-pub", "token": "tk_p"},
+        "topics": {}, "users": {}, "arr": {}})
+    _real_ppl_podman = app.podman
+    n2 = FakeNtfyPodman()
+    app.podman = n2
+    code, data = post(f"/api/people/{uid}/notifications", {})
+    check(code == 200 and data["ok"] and data["user"] == f"u-{uid}"
+          and data["token"].startswith("tk_") and len(data["password"]) >= 20
+          and data["topics"] == ["tlr-media-apitest"],
+          "person handout mints an account with badge-mirrored topics")
+    check(any("access" in c and f"u-{uid}" in c
+              and "tlr-media-apitest" in c and "read" in c
+              for c in n2.calls),
+          "read grant issued for the badge's media topic")
+    _ptok = data["token"]
+    n2.calls = []
+    code, data = post(f"/api/people/{uid}/notifications", {})
+    check(code == 200 and data["token"] == _ptok
+          and not any("token" in c for c in n2.calls),
+          "person handout is idempotent (same token, no churn)")
+    # the server badge (admin-ish) additionally opens the ops topic
+    _ppl = app.load_people()
+    _ppl[uid]["badges"] = ["apitest", "server"]
+    app.save_people(_ppl)
+    code, data = post(f"/api/people/{uid}/notifications", {})
+    check(code == 200
+          and data["topics"] == ["tlr-media-apitest", "tlr-ops"],
+          "server badge mirrors into ops-topic read access")
+
     code, data = post("/api/people", {"do": "delete", "id": uid})
     check(code == 200 and data["ok"] and uid not in app.load_people()
           and not any(t.startswith("tag:tailarr-u-")
                       or t.startswith("tag:tailarr-can-")
                       for d in _fake_devices["devices"] for t in d["tags"]),
           "delete strips identity + badges from every owned device")
+    check(uid not in ((app.ntfy_client.load_conf() or {}).get("users") or {})
+          and any("del" in c and f"u-{uid}" in c for c in n2.calls),
+          "delete drops the person's ntfy account too")
+    app.podman = _real_ppl_podman
 finally:
     app._ts_token = _real_ppl_tok
     app.ts_api = _real_ppl_api
     app.ts_policy_sync = _real_ppl_sync
+    app._ntfy_person_sync_bg = _real_sync_bg
 
 catsrv.shutdown()
 srv.shutdown()
