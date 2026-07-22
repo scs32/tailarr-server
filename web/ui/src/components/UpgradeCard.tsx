@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { FleetResult, UpgradeStatus } from "../types";
+import type { UpgradeStatus } from "../types";
 import { api } from "../api";
 import { Alert } from "./Alert";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { UpgradeOverlay, type UpgradeStage } from "./UpgradeOverlay";
 
 // How long to wait for the new controller before advising a manual look.
@@ -11,7 +12,9 @@ const UPGRADE_WAIT_MS = 150_000;
 const POLL_MS = 3_000;
 
 // Set before the post-upgrade reload so the fresh page (new SPA bundle)
-// knows to show the "Finish upgrade" step. Session-scoped on purpose.
+// can confirm the new version. The fleet rerender happens automatically
+// on the new controller's first start (warned up front in the confirm
+// dialog) — there is no "Finish upgrade" step. Session-scoped on purpose.
 const UPGRADED_FROM_KEY = "tailarr.upgraded_from";
 
 type Phase =
@@ -29,8 +32,6 @@ export function UpgradeCard() {
   const [stage, setStage] = useState<UpgradeStage>("pull");
   const [error, setError] = useState("");
   const [newVersion, setNewVersion] = useState("");
-  const [rerenderBusy, setRerenderBusy] = useState(false);
-  const [rerender, setRerender] = useState<FleetResult | null>(null);
   const timers = useRef<number[]>([]);
   const polling = useRef(false);
 
@@ -54,7 +55,7 @@ export function UpgradeCard() {
 
   useEffect(() => {
     // The page that loads AFTER a successful swap picks up the handoff
-    // and shows the "Finish upgrade" (fleet rerender) step.
+    // and confirms the new version (pods refresh automatically).
     const from = sessionStorage.getItem(UPGRADED_FROM_KEY);
     if (from) {
       sessionStorage.removeItem(UPGRADED_FROM_KEY);
@@ -95,7 +96,7 @@ export function UpgradeCard() {
         if (info.version !== from) {
           // Success — reload so the page runs the NEW version's SPA bundle
           // (this code is still the old one). The fresh page reads the
-          // handoff key and offers the "Finish upgrade" step.
+          // handoff key and confirms the upgrade.
           sessionStorage.setItem(UPGRADED_FROM_KEY, from);
           window.location.reload();
           return;
@@ -127,6 +128,7 @@ export function UpgradeCard() {
   async function upgrade() {
     if (!status) return;
     setPhase("upgrading");
+    // (reached only via the confirm dialog — it owns the restart warning)
     setStage("pull"); // the POST pulls the image before detaching the helper
     setError("");
     const r = await api.upgrade();
@@ -138,15 +140,6 @@ export function UpgradeCard() {
     }
     setStage("swap");
     waitForNewController(status.current);
-  }
-
-  async function applyEngineUpdates() {
-    setRerenderBusy(true);
-    try {
-      setRerender(await api.fleet("rerender"));
-    } finally {
-      setRerenderBusy(false);
-    }
   }
 
   if (status === null) {
@@ -183,34 +176,28 @@ export function UpgradeCard() {
       )}
 
       {phase === "done" && (
-        <>
-          <Alert kind="ok">
-            Upgraded to <strong>v{newVersion}</strong>. One step left: your
-            pods are still running with the previous version’s settings —
-            finish the upgrade to bring them along (each pod restarts
-            briefly).
-          </Alert>
-          {rerender === null ? (
-            <div className="preview-row" style={{ marginTop: "var(--sp-3)" }}>
-              <button
-                className={
-                  "btn btn--primary btn--sm" +
-                  (rerenderBusy ? " btn--loading" : "")
-                }
-                disabled={rerenderBusy}
-                onClick={applyEngineUpdates}
-              >
-                Finish upgrade
-              </button>
-            </div>
-          ) : (
-            <Alert kind={rerender.ok ? "ok" : "err"}>
-              {rerender.ok
-                ? `Updated ${rerender.results.length} pod(s). Upgrade complete.`
-                : rerender.error || "Some pods couldn't be updated."}
-            </Alert>
-          )}
-        </>
+        <Alert kind="ok">
+          Upgraded to <strong>v{newVersion}</strong>. Your pods are being
+          refreshed to the new engine automatically — running pods restart
+          briefly (watch the Dashboard); stopped pods stay stopped.
+        </Alert>
+      )}
+
+      {phase === "confirm" && status.latest && (
+        <ConfirmDialog
+          title={`Upgrade to v${status.latest}?`}
+          confirmLabel="Upgrade"
+          onConfirm={upgrade}
+          onCancel={() => setPhase("idle")}
+        >
+          <p>
+            The controller replaces itself, and afterwards{" "}
+            <strong>every running pod restarts briefly</strong> while its
+            scripts are refreshed to the new engine. Stopped pods get fresh
+            scripts but stay stopped. Pod images are not changed — use each
+            pod’s Update button for that.
+          </p>
+        </ConfirmDialog>
       )}
 
       {phase === "rolledback" && (
@@ -251,7 +238,7 @@ export function UpgradeCard() {
             <button
               className="btn btn--primary btn--sm"
               disabled={status.busy}
-              onClick={upgrade}
+              onClick={() => setPhase("confirm")}
             >
               Upgrade to v{status.latest}
             </button>

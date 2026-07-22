@@ -1706,6 +1706,59 @@ finally:
     app._image_update_status = _real_ius
     app._check_release = _real_check_release
 
+# --- auto rerender after upgrade: once per outcome, stopped stay stopped --
+_rr_calls = []
+_real_run_rerender = app._run_rerender
+_real_running_names = app.running_names
+_real_notify_ops2 = app.notify_ops
+app._run_rerender = (lambda name, start=True:
+                     (_rr_calls.append((name, start))
+                      or {"ok": True, "name": name, "action": "rerender",
+                          "status": "ok", "error": None, "output": ""}))
+app.running_names = lambda: {"apitest"}  # only apitest "running"
+app.notify_ops = lambda *a, **k: None
+try:
+    os.makedirs(app.UPGRADE_DIR, exist_ok=True)
+    with open(os.path.join(app.UPGRADE_DIR, "result.json"), "w") as f:
+        json.dump({"ok": True, "rolled_back": False,
+                   "from": "x:v1", "to": "x:v2",
+                   "finished": "2026-07-22T20:00:00Z"}, f)
+    app._auto_rerender_after_upgrade()
+    names = {n for n, _ in _rr_calls}
+    check("apitest" in names and "ntfy" in names
+          and not names & app.CONTROLLER_PODS,
+          "auto rerender covers every non-controller pod")
+    check(dict(_rr_calls)["apitest"] is True
+          and dict(_rr_calls)["ntfy"] is False,
+          "running pods restart; stopped pods rendered but left stopped")
+    _rr_calls.clear()
+    app._auto_rerender_after_upgrade()
+    check(not _rr_calls, "marker makes the pass one-shot per upgrade")
+    with open(os.path.join(app.UPGRADE_DIR, "result.json"), "w") as f:
+        json.dump({"ok": False, "rolled_back": True,
+                   "from": "x:v1", "to": "x:v2",
+                   "finished": "2026-07-22T21:00:00Z"}, f)
+    app._auto_rerender_after_upgrade()
+    check(not _rr_calls, "a rolled-back upgrade triggers no rerender")
+finally:
+    app._run_rerender = _real_run_rerender
+    app.running_names = _real_running_names
+    app.notify_ops = _real_notify_ops2
+
+# start=False renders without starting (the real function)
+_started = []
+_real_run_action2 = app._run_action
+app._run_action = (lambda name, action:
+                   (_started.append((name, action))
+                    or {"ok": True, "name": name, "action": action,
+                        "status": "ok", "error": None, "output": ""}))
+try:
+    r = app._run_rerender("apitest", start=False)
+    check(r["ok"] and "left stopped" in r["status"] and not _started,
+          "_run_rerender(start=False) renders but never calls start")
+finally:
+    app._run_action = _real_run_action2
+
 catsrv.shutdown()
 srv.shutdown()
 print("WEB API TEST PASSED")

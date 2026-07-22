@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.18.2"
+VERSION = "0.18.3"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -3173,12 +3173,14 @@ def op_exec(name, cmd):
             "error": None, "output": output}
 
 
-def _run_rerender(name):
+def _run_rerender(name, start=True):
     """Re-render one pod's scripts from its saved .config.json, then re-run
     it. This is how engine updates (new run.sh templates) reach existing
     pods — typically right after a controller upgrade. The pod's image,
     volumes, environment and Tailscale identity are all unchanged; run.sh
-    recreates the containers, so expect a brief restart."""
+    recreates the containers, so expect a brief restart. start=False
+    renders WITHOUT starting — the auto post-upgrade pass uses it so a
+    deliberately-stopped pod gets fresh scripts but stays stopped."""
     info = pod_config(name)
     if not info:
         return {"ok": False, "name": name, "action": "rerender",
@@ -3189,10 +3191,71 @@ def _run_rerender(name):
         return {"ok": False, "name": name, "action": "rerender",
                 "status": "render failed", "error": "create.sh failed",
                 "output": result.stdout + result.stderr}
+    if not start:
+        return {"ok": True, "name": name, "action": "rerender",
+                "status": "rendered (left stopped)", "error": None,
+                "output": result.stdout + result.stderr}
     r = _run_action(name, "start")
     r["action"] = "rerender"
     r["output"] = result.stdout + result.stderr + r.get("output", "")
     return r
+
+
+RERENDER_MARKER = os.path.join(UPGRADE_DIR, "rerendered.json")
+
+
+def _auto_rerender_after_upgrade():
+    """One-shot fleet rerender after a successful controller upgrade.
+
+    The upgrade flow warns UP FRONT that upgrading restarts running pods
+    — then this does it automatically on the new controller's first
+    start, so nobody has to find a "Finish upgrade" button (and headless
+    API upgrades get engine updates too). Keyed on result.json's
+    finished stamp: exactly once per upgrade outcome. Running pods
+    restart on the new templates; stopped pods get fresh scripts but
+    are NOT started; busy pods are skipped (the manual fleet rerender
+    remains for stragglers)."""
+    res = _upgrade_last_result()
+    if not res or not res.get("ok") or res.get("rolled_back") \
+            or not res.get("finished"):
+        return
+    try:
+        with open(RERENDER_MARKER) as f:
+            if (json.load(f) or {}).get("for") == res["finished"]:
+                return
+    except (OSError, ValueError):
+        pass
+    running = running_names()
+    done, failed = [], []
+    for name in deployed_services():
+        if name in CONTROLLER_PODS:
+            continue
+        if _op_begin(name, "rerender"):
+            continue  # mid-action from another request; skip, don't queue
+        try:
+            r = _run_rerender(name, start=name in running)
+            (done if r["ok"] else failed).append(name)
+        except Exception:  # noqa: BLE001 — one bad pod must not end the pass
+            failed.append(name)
+        finally:
+            _op_end(name)
+    try:
+        with open(RERENDER_MARKER + ".tmp", "w") as f:
+            json.dump({"for": res["finished"], "at": time.time(),
+                       "ok": sorted(done), "failed": sorted(failed)}, f)
+        os.replace(RERENDER_MARKER + ".tmp", RERENDER_MARKER)
+    except OSError:
+        pass
+    print(f"post-upgrade rerender: {len(done)} ok, {len(failed)} failed")
+    if failed:
+        notify_ops("Post-upgrade refresh incomplete",
+                   f"Refreshed {len(done)} pod(s); failed: "
+                   + ", ".join(sorted(failed)), priority="high",
+                   tags=["warning"])
+    elif done:
+        notify_ops("Upgrade complete",
+                   f"Now running v{VERSION}; refreshed {len(done)} pod(s) "
+                   "to the new engine.", tags=["white_check_mark"])
 
 
 def op_fleet(action):
@@ -4878,6 +4941,11 @@ def _maintenance_loop():
     except Exception as e:
         print(f"relay pre-flight error: {e}")
     _startup_policy_sync()
+    # After a successful self-upgrade, push the new engine templates to
+    # the fleet automatically (one-shot, marker-keyed) — the upgrade UI
+    # warned about the restarts up front, so no "Finish upgrade" step.
+    threading.Thread(target=_auto_rerender_after_upgrade,
+                     daemon=True).start()
     while True:
         try:
             ensure_controller_serve()
