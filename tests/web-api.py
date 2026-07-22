@@ -1935,6 +1935,93 @@ finally:
     app.ts_policy_sync = _real_ppl_sync
     app._ntfy_person_sync_bg = _real_sync_bg
 
+# --- self-config gateway: the one deliberate visibility exception ---------
+# Simulate the deployed gateway pod (controller image, matched by name).
+_gate_dir = os.path.join(pods, "tailarr-gate")
+os.makedirs(_gate_dir, exist_ok=True)
+with open(os.path.join(_gate_dir, ".config.json"), "w") as f:
+    json.dump({"image": "ghcr.io/scs32/tailarr:v0.0.0",
+               "ports": {"80": "80"}}, f)
+with open(os.path.join(_gate_dir, "run.sh"), "w") as f:
+    f.write("#!/bin/sh\nexit 0\n")
+
+check(app._is_system("tailarr-gate") and not app._is_system("apitest"),
+      "the gateway is a system pod by name (controller image stays clean)")
+secs = app._managed_sections()
+gate_lines = [ln for ln in secs["grants"] if "tailarr-gate" in ln]
+check(len(gate_lines) == 1 and '"tag:tailarr-user"' in gate_lines[0]
+      and '"80"' in gate_lines[0],
+      "deployed gateway emits exactly one user->gateway grant")
+check(app._grants_minimality_ok(secs["grants"])
+      and app._sections_prefix_ok(secs),
+      "the gateway grant passes the minimality carve-out")
+for bad, why in [
+    ('{"src": ["tag:tailarr-user"], "dst": ["tag:tailarr-svc-tailarr-gate"], '
+     '"ip": ["443"]},', "wrong port"),
+    ('{"src": ["tag:tailarr-user"], "dst": ["tag:tailarr-svc-sonarr"], '
+     '"ip": ["80"]},', "wrong destination"),
+    ('{"src": ["tag:tailarr-user", "tag:tailarr"], '
+     '"dst": ["tag:tailarr-svc-tailarr-gate"], "ip": ["80"]},',
+     "bundled src"),
+]:
+    check(not app._grants_minimality_ok([bad]),
+          f"carve-out is exact: {why} rejected")
+
+# resolve: whois against the gateway's sidecar -> the person's handout
+app._ts_token = lambda: "dummy-test-token"
+app.ts_api = _fake_people_api
+app.ts_policy_sync = lambda: {"ok": True, "changed": False, "error": None}
+app._ntfy_person_sync_bg = lambda uid: None
+code, data = post("/api/people", {"do": "add", "name": "Eve"})
+_gate_uid = data["id"]
+_ppl = app.load_people()
+_ppl[_gate_uid]["badges"] = ["apitest"]
+app.save_people(_ppl)
+
+
+class GateFake(FakeNtfyPodman):
+    def __call__(self, *args, timeout=60):
+        a = list(args)
+        if a[0] == "exec" and "whois" in a:
+            self.calls.append(a)
+            return _sp.CompletedProcess(a, 0, json.dumps(
+                {"Node": {"Tags": ["tag:tailarr-user",
+                                   f"tag:tailarr-u-{_gate_uid}"]}}), "")
+        return super().__call__(*args, timeout=timeout)
+
+
+gfake = GateFake()
+_real_gate_podman = app.podman
+app.podman = gfake
+try:
+    app._write_secret(app.GATEWAY_FILE,
+                      json.dumps({"secret": "dummy-test-gwsecret"}))
+    code, data = post("/api/gateway/resolve",
+                      {"ip": "100.64.0.9", "secret": "wrong"})
+    check(code == 400 and "secret" in data["error"],
+          "resolve refuses a bad gateway secret")
+    code, data = post("/api/gateway/resolve",
+                      {"ip": "100.64.0.9", "secret": "dummy-test-gwsecret"})
+    check(code == 200 and data["ok"] and data["user"] == f"u-{_gate_uid}"
+          and data["topics"] == ["tlr-media-apitest"]
+          and data["token"].startswith("tk_"),
+          "resolve whoises the caller and returns THEIR handout")
+    check(any("whois" in c and f"tailscale-{app.GATEWAY_POD}" in c
+              for c in gfake.calls),
+          "whois runs against the gateway's sidecar (its peers, not ours)")
+    plain = FakeNtfyPodman()  # its exec/tailscale branch fails -> rc 1
+    app.podman = plain
+    code, data = post("/api/gateway/resolve",
+                      {"ip": "100.64.0.9", "secret": "dummy-test-gwsecret"})
+    check(code == 400 and "whois failed" in data["error"],
+          "unresolvable caller is a clean refusal")
+finally:
+    app.podman = _real_gate_podman
+    app._ts_token = _real_ppl_tok
+    app.ts_api = _real_ppl_api
+    app.ts_policy_sync = _real_ppl_sync
+    app._ntfy_person_sync_bg = _real_sync_bg
+
 catsrv.shutdown()
 srv.shutdown()
 print("WEB API TEST PASSED")

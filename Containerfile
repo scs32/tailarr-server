@@ -32,7 +32,7 @@ COPY create.sh error-handler.sh logging-utils.sh parse-service-config.sh \
      setup-service-env.sh generate-scripts.sh generate-run-template.sh \
      generate-diagnose-template.sh display-summary.sh homelab.js /app/
 COPY catalogs/ /app/catalogs/
-COPY web/app.py web/kuma_client.py web/ntfy_client.py /app/web/
+COPY web/app.py web/kuma_client.py web/ntfy_client.py web/selfconfig.py /app/web/
 COPY --from=ui /ui/dist /app/static
 
 # Ship the boot-recovery script so a controller self-upgrade can refresh the

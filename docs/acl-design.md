@@ -460,10 +460,29 @@ sole src of a sole-dst badge switch, or in any dst. Future rules that
 would widen user visibility must extend that function *and* this
 section, consciously.
 
+**The gateway exception (2026-07-22, Stephen's design + explicit
+visibility decision).** Self-configuring notifications need SOME node
+user devices can query. Rather than exposing the controller (podman
+socket + policy-writing OAuth = crown jewels), a dedicated
+`tailarr-gate` system pod — the controller's own image running
+`selfconfig.py`, holding no secrets — answers exactly one question:
+"whose connection is this → their notification handout". It gets the
+answer from the controller (`/api/gateway/resolve`, per-install shared
+secret, exempt from the bearer gate), which runs `tailscale whois`
+against the GATEWAY's sidecar (user devices are its peers, never the
+controller's). Tailnet source addresses are unforgeable, so the whois
+verdict is authoritative. The one fenced grant —
+`tag:tailarr-user → tag:tailarr-svc-tailarr-gate:80` — is the sole
+network grant with a user-wearable src; `_grants_minimality_ok` has an
+exact-shape carve-out for it (port, dst, sole src all pinned) and
+rejects every variant. ACCEPTED trade: every user netmap gains the one
+gateway node; the controller stays invisible.
+
 **Live audit recipe** (doubles as the E2E check): enroll a device with a
 minted user key, grant it exactly one service, and its peer list —
 Status screen or `tailscale status --json` — must show exactly that
-pod, plus the relay device iff relay is enabled, and nothing else
+pod, plus the `tailarr-gate` node (the self-config exception above),
+plus the relay device iff relay is enabled, and nothing else
 (under the narrowed README baseline; a wide `admin → *` sovereignty
 rule additionally surfaces every admin device). Toggle the grant off
-and the pod must disappear.
+and the pod must disappear. The controller must NEVER appear.

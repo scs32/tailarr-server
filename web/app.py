@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.20.0"
+VERSION = "0.21.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -60,6 +60,18 @@ CONTROLLER_PODS = {"tailarr", "podscale", "homepod"}  # older names = pre-rename
 # substring, like _discover_kuma — the flag must survive engine re-renders
 # and hand-rolled installs, and .config.json carries no custom fields.
 SYSTEM_IMAGES = ("binwiederhier/ntfy",)
+
+# The self-config gateway (acl-design §12 addendum): the ONE node user
+# devices may reach besides their granted pods, so the Tailarr app can
+# fetch its own notification config with zero setup. Runs the
+# controller's OWN image with the selfconfig.py entrypoint;
+# auto-deployed at ntfy setup; matched by NAME (its image is the
+# controller image, which must never itself read as a system pod).
+# Holds no secrets — it asks the controller via /api/gateway/resolve,
+# authenticated by a per-install shared secret in .gateway.json (0600).
+GATEWAY_POD = "tailarr-gate"
+GATEWAY_PORT = "80"
+GATEWAY_FILE = os.path.join(PODS_DIR, ".gateway.json")
 
 # Host platform fact: written by the bootstrap (apple/container guests run
 # vminitd as PID 1 — that single fact drives the peer-relay offer and skips
@@ -1161,8 +1173,11 @@ def save_user_nicks(data):
 
 
 def _is_system(name):
-    """Infrastructure pods (SYSTEM_IMAGES): controller-managed, never
-    shareable, invisible to consumer devices. See the SYSTEM_IMAGES note."""
+    """Infrastructure pods (SYSTEM_IMAGES + the gateway): controller-
+    managed, never shareable, hidden from the admin UI's pod lists.
+    The gateway matches by NAME — it runs the controller's image."""
+    if name == GATEWAY_POD:
+        return True
     img = (pod_config(name) or {}).get("image", "")
     return any(s in img for s in SYSTEM_IMAGES)
 
@@ -1707,6 +1722,14 @@ def _managed_sections(relay_dst=None):
     for s in svcs:
         grants.append(f'{{"src": ["tag:tailarr-can-{s}"], '
                       f'"dst": ["tag:tailarr-svc-{s}"], "ip": ["443"]}},')
+    # The self-config gateway: the ONE deliberate exception to "user
+    # devices reach only their badges" (§12 addendum) — every user
+    # device may ask the gateway for its own notification config. The
+    # minimality checker's carve-out matches exactly this line.
+    if GATEWAY_POD in deployed_services():
+        grants.append(f'{{"src": ["{TS_USER_TAG}"], '
+                      f'"dst": ["tag:tailarr-svc-{GATEWAY_POD}"], '
+                      f'"ip": ["{GATEWAY_PORT}"]}}, // self-config gateway')
     # tag:tailarr-ctrl co-owns every other tag so an OAuth client tagged
     # tag:tailarr-ctrl may assign them (device tagging + key minting).
     # It must also own ITSELF: the client acts as tag:tailarr-ctrl, and a
@@ -1853,7 +1876,12 @@ def _grants_minimality_ok(grant_lines):
       - in the src of an app-capability-only grant (no "ip" key — the
         peer-relay cap; no network access is conferred), or
       - as the SOLE src of a network grant with a SOLE dst (the per-badge
-        access switch: can-<svc> -> svc-<svc>, can-server -> ctrl),
+        access switch: can-<svc> -> svc-<svc>, can-server -> ctrl), or
+      - as EXACTLY the self-config gateway grant (tag:tailarr-user ->
+        tag:tailarr-svc-tailarr-gate on the gateway port only) — the one
+        deliberate visibility exception, decided 2026-07-22: user
+        netmaps gain the gateway node so the app can self-configure;
+        the controller stays invisible,
 
     and never in any dst (reverse-direction rules create visibility too).
     Anything else — user tags bundled into a broad src, a catch-all dst,
@@ -1874,6 +1902,10 @@ def _grants_minimality_ok(grant_lines):
             if len(src) == 1 and src[0].startswith(TS_CAN_PREFIX) \
                     and len(dst) == 1:
                 continue  # the per-badge access switch
+            if src == [TS_USER_TAG] \
+                    and dst == [f"tag:tailarr-svc-{GATEWAY_POD}"] \
+                    and g.get("ip") == [GATEWAY_PORT]:
+                continue  # the self-config gateway (sole exception)
             return False
     except (ValueError, AttributeError, TypeError):
         return False
@@ -4255,6 +4287,7 @@ def status_ntfy():
                        if entry and entry.get("dns_name") else ""),
         "ops_topic": ntfy_client.OPS_TOPIC,
         "alerts_issued": bool((conf or {}).get("alerts")),
+        "gateway": GATEWAY_POD in deployed_services(),
         "publish_error": state.get("last_publish_error") or None,
         "error": None,
     }
@@ -4385,8 +4418,15 @@ def op_ntfy_setup(_data):
     test_err = ntfy_client.publish(
         conf, _ntfy_internal_url(entry), ntfy_client.OPS_TOPIC,
         "Tailarr", "Notifications are set up.")
+    # The self-config gateway rides along: with notifications live, the
+    # Tailarr app on user devices can now fetch its own config.
+    try:
+        gateway_error = _ensure_gateway()
+    except Exception as e:  # noqa: BLE001 — never fail setup on this
+        gateway_error = str(e)
     return {"ok": True, "error": None, "test_error": test_err,
-            "funnel_error": funnel_error, "status": status_ntfy()}
+            "funnel_error": funnel_error, "gateway_error": gateway_error,
+            "status": status_ntfy()}
 
 
 def op_ntfy_funnel(data):
@@ -4487,6 +4527,100 @@ def op_ntfy_test(_data):
         conf, _ntfy_internal_url(_discover_ntfy(fresh=True)),
         ntfy_client.OPS_TOPIC, "Tailarr", "Test notification.")
     return {"ok": err is None, "error": err}
+
+
+# =========================================================================
+# Self-config gateway (tailarr-gate) — see the GATEWAY_POD note and
+# web/selfconfig.py. Deployed as part of ntfy setup; the app on a user's
+# device asks the gateway, the gateway asks us, we whois THE GATEWAY'S
+# sidecar (user devices are its peers, never ours) and answer with that
+# person's notification handout.
+# =========================================================================
+def load_gateway():
+    try:
+        with open(GATEWAY_FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) and data.get("secret") \
+            else None
+    except (OSError, ValueError):
+        return None
+
+
+def _controller_image():
+    name = _controller_name()
+    if not name:
+        return ""
+    r = podman("inspect", name, "--format", "{{.ImageName}}")
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def _ensure_gateway():
+    """Deploy the gateway pod once (idempotent; runs during ntfy setup).
+    Uses the controller's own image with the selfconfig entrypoint. The
+    post-install policy sync emits the user->gateway grant. Returns an
+    error string or None."""
+    if GATEWAY_POD in deployed_services():
+        return None
+    gw = load_gateway()
+    if not gw:
+        gw = {"secret": secrets.token_urlsafe(32),
+              "created": int(time.time())}
+        _write_secret(GATEWAY_FILE, json.dumps(gw, indent=2))
+    image = _controller_image()
+    if not image:
+        return "could not determine the controller image"
+    ctrl = _controller_name()
+    entry = network_entry(ctrl, ps_all()) if ctrl else None
+    if not entry or not entry.get("ip"):
+        return "controller tailnet IP unknown (sidecar not running?)"
+    inst = op_install({
+        "name": GATEWAY_POD, "custom": True,
+        "image": image,
+        "command": "python3 /app/web/selfconfig.py",
+        "ports": {GATEWAY_PORT: GATEWAY_PORT},
+        "environment": {"CONTROLLER_URL": f"http://{entry['ip']}:{PORT}",
+                        "GATEWAY_SECRET": gw["secret"]},
+        "volumes": {}, "restart_policy": "unless-stopped",
+        "shares": [], "authkey": "",
+        "config_file": "", "config_set": {},
+    })
+    if not inst["ok"]:
+        return inst.get("error") or "gateway install failed"
+    r = op_action(GATEWAY_POD, "start")
+    if not r["ok"]:
+        return "gateway start failed: " + (r.get("error") or r["status"])
+    return None
+
+
+def op_gateway_resolve(data):
+    """The gateway's only question: whose connection is this, and what
+    is their notification config? Authenticated by the per-install
+    shared secret (the gateway's env), NOT the bearer gate — this path
+    is exempt there and useless without the secret. Tailnet source
+    addresses are unforgeable, so the whois answer is authoritative."""
+    gw = load_gateway()
+    if not gw or not hmac.compare_digest(
+            str(data.get("secret") or ""), gw["secret"]):
+        return {"ok": False, "error": "bad gateway secret"}
+    ip = (data.get("ip") or "").strip()
+    if not re.fullmatch(r"[0-9a-fA-F.:]+", ip):
+        return {"ok": False, "error": "bad address"}
+    r = podman("exec", f"tailscale-{GATEWAY_POD}", "tailscale",
+               "whois", "--json", ip, timeout=15)
+    if r.returncode != 0:
+        return {"ok": False, "error": ("whois failed: "
+                + (r.stdout + r.stderr).strip()[-200:])}
+    try:
+        node = (json.loads(r.stdout) or {}).get("Node") or {}
+        tags = node.get("Tags") or []
+    except ValueError:
+        return {"ok": False, "error": "whois returned no node"}
+    uid = next((t[len(TS_PERSON_PREFIX):] for t in tags
+                if t.startswith(TS_PERSON_PREFIX)), None)
+    if not uid:
+        return {"ok": False,
+                "error": "this device is not assigned to a user"}
+    return op_person_notify(uid)
 
 
 _notify_state_lock = threading.Lock()
@@ -5265,6 +5399,10 @@ def api_post(path, data):
         result = op_ntfy_alerts(data)
         return (200 if result["ok"] else 400), result
 
+    if path == "/api/gateway/resolve":
+        result = op_gateway_resolve(data)
+        return (200 if result["ok"] else 400), result
+
     m = re.fullmatch(r"/api/monitor/pods/([a-z0-9][a-z0-9-]*)", path)
     if m:
         result = op_monitor_pod(m.group(1), (data.get("do") or "").strip())
@@ -5514,7 +5652,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.path.startswith("/api/"):
             return self._send_json({"error": "not found"}, 404)
-        if not token_auth_ok(self.headers.get("Authorization")):
+        # The gateway authenticates with its per-install shared secret
+        # (op_gateway_resolve), not a bearer token it has no way to hold.
+        if self.path != "/api/gateway/resolve" and \
+                not token_auth_ok(self.headers.get("Authorization")):
             return self._send_json(
                 {"ok": False, "error": "authentication required"}, 401)
         length = int(self.headers.get("Content-Length", "0"))
