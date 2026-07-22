@@ -20,7 +20,7 @@ PODS_DIR="${PODS_DIR:-$HOME/Pods}"
 # fresh install right after a release can't catch a stale :latest manifest
 # from GHCR. CI enforces that this matches web/app.py's VERSION; bump both
 # when cutting a release. HOMEPOD_IMAGE still overrides everything.
-TAILARR_VERSION="0.19.0"
+TAILARR_VERSION="0.20.0"
 IMAGE="${HOMEPOD_IMAGE:-ghcr.io/scs32/tailarr:v${TAILARR_VERSION}}"
 TS_IMAGE="docker.io/tailscale/tailscale:stable"
 SOCKET="/run/podman/podman.sock"

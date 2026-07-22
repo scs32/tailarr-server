@@ -203,6 +203,7 @@ export interface Person {
 export interface UsersStatus {
   configured: boolean; // API token present on the controller
   error: string | null;
+  ntfy: boolean; // notifications system pod is set up
   people: Person[];
   users: UserMachine[]; // unassigned machines (legacy keys / adopt)
   // Grantable services: deployed non-controller pods plus the "server"
