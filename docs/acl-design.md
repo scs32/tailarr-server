@@ -399,3 +399,63 @@ peer relay a first-class Networking feature on every platform:
   pending until `relay_verify()` sees traffic through it. The machine
   worth nominating is the OUTERMOST host (the Mac — install-mac.sh) or
   any well-connected tailnet device.
+
+## 12. Addendum (2026-07-22): netmap minimality — visibility fencing
+
+Motivated by the iOS app's Tailscale Status screen, which renders a
+device's netmap and thereby turns *visibility* into product surface (and
+into an audit tool). The invariant, stronger than "users can't connect
+to ungranted services":
+
+> A device wearing `tag:tailarr-user` must receive a netmap containing
+> only what its `can-*` badges grant. Tailscale prunes a peer only when
+> the policy allows ZERO traffic between the pair — any rule matching
+> them on any port, in either direction, exposes the peer's name and
+> tailnet IPs. So there must be **no rule at all** connecting a user
+> device to anything outside its grants.
+
+**Why the fences satisfy it** (each generated grant, audited 2026-07-22):
+
+- `tag:tailarr → tag:tailarr ip:*` — user devices never wear
+  `tag:tailarr` (`op_user_key` mints `tag:tailarr-user` only;
+  `op_user_adopt` refuses fleet-tagged devices). Pods see each other and
+  the controller; users see none of it.
+- `can-<svc> → svc-<svc>:443` and `can-server → ctrl:443` — the ONLY
+  network grants whose src a user device can wear. Single badge, single
+  dst: a badge exposes exactly one pod (or the controller, which is
+  otherwise invisible — a deliberate per-user opt-in). No user↔user
+  rule exists, so enrolled devices never see each other.
+- Funnel ingress (`fd7a:…/64 → tag:tailarr-public`) — Tailscale's
+  ingress range, not user devices.
+- Peer-relay cap grants — cap-only (no `"ip"`), so no network access,
+  but a cap grant is still a rule: **the relay dst is visible to every
+  consumer** (§11 shapes; the legacy autogroup dst exposes every
+  admin/member device, a registry-IP dst exposes one relay). Deliberate,
+  documented at `_RELAY_CONSUMERS`; enabling relay is the one opt-in
+  that widens a scoped user's peer list.
+- Revocation is tag-flip revocation: removing a `can-*` badge unmatches
+  its grant and the pod leaves the device's netmap on the next map push.
+  Removing a service drops its grant + owner lines at the next sync.
+
+**Outside the fences** the README's operator-sovereignty line
+(`autogroup:admin → * ip:*`) makes every admin-owned device visible in
+every user netmap (reverse-direction rules count). That line is the
+human's, not ours; it's the accepted baseline of the dedicated-tailnet
+model. Anything else broad outside the fences (a leftover allow-all,
+ping rules touching `tag:tailarr-user`) breaks minimality — Tailarr
+cannot rewrite the human's policy, so this stays a documented audit
+item, checkable from the app's Status screen.
+
+**Enforcement**: `_grants_minimality_ok()` runs before every splice
+(including downgrade-ladder retries) and fails the sync closed if a
+generated grant puts a user-wearable selector (`tag:tailarr-user`,
+`tag:tailarr-can-*`) anywhere but the src of a cap-only grant or the
+sole src of a sole-dst badge switch, or in any dst. Future rules that
+would widen user visibility must extend that function *and* this
+section, consciously.
+
+**Live audit recipe** (doubles as the E2E check): enroll a device with a
+minted user key, grant it exactly one service, and its peer list —
+Status screen or `tailscale status --json` — must show exactly that
+pod, plus admin devices (sovereignty line), plus the relay device iff
+relay is enabled. Toggle the grant off and the pod must disappear.

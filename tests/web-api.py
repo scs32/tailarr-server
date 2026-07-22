@@ -657,6 +657,48 @@ check(any(ln.startswith('"tag:tailarr-ctrl"') and '"tag:tailarr-ctrl"' in
 check(app._sections_prefix_ok(secs),
       "can-server content passes the tag prefix invariant")
 
+# --- Netmap minimality: user-device visibility never widens ---------------
+# docs/acl-design.md §12: ANY rule matching a user device on any port in
+# either direction makes the peer visible in its netmap, so generated
+# grants may connect user selectors to exactly their badges' targets
+# (plus cap-only relay grants). Enforced fail-closed in ts_policy_sync.
+check(app._grants_minimality_ok(secs["grants"]),
+      "generated grants pass the netmap-minimality invariant")
+for _dst in ("admin", "member", ""):
+    check(app._grants_minimality_ok(
+        app._managed_sections(relay_dst=_dst)["grants"]),
+        f"relay shape {_dst or 'off'!r} passes netmap minimality")
+for _line, _why in [
+    ('{"src": ["tag:tailarr-user"], "dst": ["tag:tailarr"], "ip": ["*"]},',
+     "a user catch-all src"),
+    ('{"src": ["tag:tailarr"], "dst": ["tag:tailarr-user"], "ip": ["443"]},',
+     "a user device in dst (reverse visibility)"),
+    ('{"src": ["tag:tailarr-can-radarr", "tag:tailarr-user"], '
+     '"dst": ["tag:tailarr-svc-radarr"], "ip": ["443"]},',
+     "a user tag bundled into a network src"),
+    ('{"src": ["tag:tailarr-can-radarr"], "dst": ["tag:tailarr-svc-radarr", '
+     '"tag:tailarr-ctrl"], "ip": ["443"]},',
+     "a badge grant with more than one dst"),
+    ('{"src": ["tag:tailarr"], "dst": ["tag:tailarr-can-radarr"], '
+     '"app": {"tailscale.com/cap/relay": []}}, // x',
+     "a cap grant targeting user devices"),
+    ('this is not a grant line', "an unparseable grant line"),
+]:
+    check(not app._grants_minimality_ok([_line]),
+          f"minimality rejects {_why}")
+
+_real_managed_sections = app._managed_sections
+app._managed_sections = lambda relay_dst=None: {
+    "grants": ['{"src": ["tag:tailarr-user"], "dst": ["tag:tailarr"], '
+               '"ip": ["*"]},'],
+    "tagowners": [], "nodeattrs": []}
+try:
+    _r = app.ts_policy_sync()
+    check(_r["ok"] is False and "minimality" in _r["error"],
+          "ts_policy_sync fails closed on a visibility-widening grant")
+finally:
+    app._managed_sections = _real_managed_sections
+
 code, data = get("/api/users")
 check(code == 200 and "server" in data["services"],
       "'server' is offered as a grantable service on the Users page")

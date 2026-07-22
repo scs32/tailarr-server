@@ -1250,6 +1250,23 @@ def op_user_adopt(node_id):
 # HuJSON outside the fences survives byte-for-byte. Fail closed on any
 # fence anomaly; nothing inside a fence may reference a name outside
 # tag:tailarr* (the prefix invariant).
+#
+# NETMAP MINIMALITY (visibility invariant — docs/acl-design.md §12):
+# Tailscale prunes a peer from a node's netmap only when the policy allows
+# ZERO traffic between them in either direction; ANY rule matching the
+# pair — any port, any direction, even ping — makes the peer's name and
+# tailnet IPs visible. So "users can't connect to ungranted services" is
+# not enough: a tag:tailarr-user device must have NO rule at all
+# connecting it to anything beyond its can-* badges. Concretely, a fence
+# grant whose src can match a user device (tag:tailarr-user itself or a
+# can-* badge) must be either a single-badge -> single-service network
+# grant, or an app-capability-only grant (peer relay: no "ip" key, no
+# network access — but note the relay DEVICE does become visible to every
+# consumer, a deliberate trade); and user selectors may never appear in
+# any dst (reverse-direction rules create visibility too). Enforced fail-
+# closed by _grants_minimality_ok before every splice. Revocation needs
+# no extra work: flipping a can-* badge off unmatches the grant and the
+# pod drops out of the device's netmap on the next map push.
 # =========================================================================
 _policy_lock = threading.Lock()
 ACL_BACKUP_FILE = os.path.join(PODS_DIR, ".acl-last-good.hujson")
@@ -1315,7 +1332,12 @@ def _relay_cap(src, dst, note):
 
 
 # Devices allowed to USE a relay alongside the pod sidecars: enrolled user
-# devices and the admin's untagged phone/laptop.
+# devices and the admin's untagged phone/laptop. Visibility trade
+# (deliberate — acl-design.md §12): a cap grant is still a rule, so the
+# relay dst becomes VISIBLE (name + IPs, no access) in every consumer's
+# netmap — with the legacy autogroup dst that is every admin/member
+# device, with a registry-IP dst just the one relay. Enabling relay is
+# therefore the one opt-in that widens a scoped user's peer list.
 _RELAY_CONSUMERS = '"tag:tailarr-user", "autogroup:member"'
 
 
@@ -1389,6 +1411,49 @@ def _sections_prefix_ok(sections):
             for t in re.findall(r'"(tag:[a-z0-9-]+)"', ln):
                 if not t.startswith("tag:tailarr"):
                     return False
+    return True
+
+
+def _grant_obj(line):
+    """Parse one generated grant line (single-line JSON object, trailing
+    comma, optional // comment) back into a dict. Raises on anything that
+    doesn't parse — a generated line we can't read is a line we can't
+    audit, so the caller fails closed."""
+    return json.loads(line[:line.rindex("}") + 1])
+
+
+def _grants_minimality_ok(grant_lines):
+    """The netmap-minimality invariant (see the block comment above and
+    docs/acl-design.md §12): no grant may widen what a tag:tailarr-user
+    device can see. A selector a user device can wear (tag:tailarr-user
+    or any tag:tailarr-can-*) may appear only
+
+      - in the src of an app-capability-only grant (no "ip" key — the
+        peer-relay cap; no network access is conferred), or
+      - as the SOLE src of a network grant with a SOLE dst (the per-badge
+        access switch: can-<svc> -> svc-<svc>, can-server -> ctrl),
+
+    and never in any dst (reverse-direction rules create visibility too).
+    Anything else — user tags bundled into a broad src, a catch-all dst,
+    a rule targeting user devices — fails the whole sync."""
+    def wearable(name):
+        return name == TS_USER_TAG or name.startswith(TS_CAN_PREFIX)
+    try:
+        for ln in grant_lines:
+            g = _grant_obj(ln)
+            src, dst = g.get("src", []), g.get("dst", [])
+            if any(wearable(d) for d in dst):
+                return False
+            if not any(wearable(s) for s in src):
+                continue
+            if "ip" not in g and "app" in g:
+                continue  # cap-only (peer relay): relaying, not access
+            if len(src) == 1 and src[0].startswith(TS_CAN_PREFIX) \
+                    and len(dst) == 1:
+                continue  # the per-badge access switch
+            return False
+    except (ValueError, AttributeError, TypeError):
+        return False
     return True
 
 
@@ -1466,6 +1531,10 @@ def ts_policy_sync():
     if not _sections_prefix_ok(sections):
         return {"ok": False, "changed": False,
                 "error": "generated content violates the tag prefix rule"}
+    if not _grants_minimality_ok(sections["grants"]):
+        return {"ok": False, "changed": False,
+                "error": "generated grants violate netmap minimality "
+                         "(user-device visibility would widen)"}
     with _policy_lock:
         # 2 attempts covers a 412 retry; the extra headroom is for the
         # peer-relay downgrade ladder (admin dst -> member dst -> no grant).
@@ -1492,7 +1561,8 @@ def ts_policy_sync():
                 # the culprit — then downgrade (member dst, then give up)
                 # and retry. Otherwise surface the original error.
                 downgraded = _relay_downgrade_after_reject(raw, resp)
-                if downgraded is not None:
+                if downgraded is not None and \
+                        _grants_minimality_ok(downgraded["grants"]):
                     sections = downgraded
                     continue
                 return {"ok": False, "changed": False, "error": f"acl validate: {resp[:300]}"}
