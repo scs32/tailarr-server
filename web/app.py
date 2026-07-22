@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.18.1"
+VERSION = "0.18.2"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -3799,6 +3799,7 @@ def status_ntfy():
         "public_url": (f"https://{entry['dns_name']}"
                        if entry and entry.get("dns_name") else ""),
         "ops_topic": ntfy_client.OPS_TOPIC,
+        "alerts_issued": bool((conf or {}).get("alerts")),
         "publish_error": state.get("last_publish_error") or None,
         "error": None,
     }
@@ -3896,6 +3897,72 @@ def op_ntfy_funnel(data):
         return {"ok": False, "error": "No ntfy pod found."}
     r = op_network_set(entry["name"], {"funnel": bool(data.get("enabled"))})
     return {"ok": r["ok"], "error": r.get("error"),
+            "status": status_ntfy()}
+
+
+def op_ntfy_alerts(data):
+    """Issue/revoke the admin phone credential ("Alerts on your phone").
+
+    A dedicated read-only ntfy account (tailarr-alerts, read on tlr-*)
+    whose token IS the handout — deliberately returned by the API,
+    unlike every other stored secret, because its whole job is to be
+    entered into the ntfy app (or, later, the Tailarr app) on the
+    admin's phone. Issue is idempotent: it converges the account +
+    grant and re-returns the saved token, so "Show details" after a
+    page reload is just another issue call. Revoke deletes the ntfy
+    account — its tokens and grants die with it."""
+    do = (data.get("do") or "issue").strip()
+    conf = ntfy_client.load_conf()
+    if not conf:
+        return {"ok": False, "error": "ntfy is not configured — run setup."}
+    entry = _discover_ntfy(fresh=True)
+    if not entry:
+        return {"ok": False, "error": "No ntfy pod found."}
+    pod = entry["name"]
+    user = ntfy_client.ALERTS_USER
+    if do == "revoke":
+        r = _ntfy_cli(pod, "user", "del", user)
+        out = r.stdout + r.stderr
+        if r.returncode != 0 and "exist" not in out and "found" not in out:
+            return {"ok": False, "error": "could not delete the alerts "
+                                          "account: " + out.strip()[-200:]}
+        conf.pop("alerts", None)
+        ntfy_client.save_conf(conf)
+        return {"ok": True, "error": None, "status": status_ntfy()}
+    if do != "issue":
+        return {"ok": False, "error": f"unknown do '{do}'"}
+    saved = conf.get("alerts") or {}
+    listed = _ntfy_cli(pod, "user", "list")
+    if listed.returncode != 0:
+        return {"ok": False, "error": ("ntfy CLI unavailable: "
+                + (listed.stdout + listed.stderr).strip()[-200:])}
+    exists = f"user {user}" in (listed.stdout + listed.stderr)
+    password = (saved.get("password") if exists else None) \
+        or secrets.token_urlsafe(24)
+    if not exists:
+        r = _ntfy_cli(pod, "user", "add", "--role=user", user,
+                      env={"NTFY_PASSWORD": password})
+        if r.returncode != 0 and "exists" not in (r.stdout + r.stderr):
+            return {"ok": False, "error": ("could not create the alerts "
+                    "account: " + (r.stdout + r.stderr).strip()[-200:])}
+    r = _ntfy_cli(pod, "access", user, "tlr-*", "read")
+    if r.returncode != 0:
+        return {"ok": False, "error": ("could not grant read access: "
+                + (r.stdout + r.stderr).strip()[-200:])}
+    token = saved.get("token", "") if exists else ""
+    if not token:
+        r = _ntfy_cli(pod, "token", "add", user)
+        m = re.search(r"tk_[A-Za-z0-9_]+", r.stdout + r.stderr)
+        if r.returncode != 0 or not m:
+            return {"ok": False, "error": ("could not mint the alerts "
+                    "token: " + (r.stdout + r.stderr).strip()[-200:])}
+        token = m.group(0)
+    conf["alerts"] = {"user": user, "password": password, "token": token}
+    ntfy_client.save_conf(conf)
+    url = conf.get("public_url") or (f"https://{entry['dns_name']}"
+                                     if entry.get("dns_name") else "")
+    return {"ok": True, "error": None, "url": url,
+            "topics": [ntfy_client.OPS_TOPIC], "token": token,
             "status": status_ntfy()}
 
 
@@ -4664,6 +4731,10 @@ def api_post(path, data):
 
     if path == "/api/ntfy/funnel":
         result = op_ntfy_funnel(data)
+        return (200 if result["ok"] else 400), result
+
+    if path == "/api/ntfy/alerts":
+        result = op_ntfy_alerts(data)
         return (200 if result["ok"] else 400), result
 
     m = re.fullmatch(r"/api/monitor/pods/([a-z0-9][a-z0-9-]*)", path)

@@ -1640,6 +1640,29 @@ try:
     check(code == 200 and data["ok"]
           and app.pod_config("ntfy").get("funnel") == "yes",
           "Notifications page owns the funnel toggle (back on)")
+
+    # "Alerts on your phone": issue / re-show / revoke
+    code, data = post("/api/ntfy/alerts", {"do": "issue"})
+    check(code == 200 and data["ok"] and data["token"].startswith("tk_")
+          and data["topics"] == ["tlr-ops"]
+          and data["status"]["alerts_issued"] is True,
+          "alerts issue mints a read credential and flags status")
+    check("tailarr-alerts" in nfake.users
+          and any("access" in c and "tailarr-alerts" in c and "read" in c
+                  for c in nfake.calls),
+          "alerts account created with read-only access")
+    tok1 = data["token"]
+    nfake.calls = []
+    code, data = post("/api/ntfy/alerts", {"do": "issue"})
+    check(code == 200 and data["token"] == tok1
+          and not any("token" in c for c in nfake.calls),
+          "re-issue re-shows the SAME token (idempotent)")
+    code, data = post("/api/ntfy/alerts", {"do": "revoke"})
+    check(code == 200 and data["ok"]
+          and data["status"]["alerts_issued"] is False
+          and any("del" in c and "tailarr-alerts" in c for c in nfake.calls)
+          and "alerts" not in (app.ntfy_client.load_conf() or {}),
+          "revoke deletes the ntfy account and clears the registry")
 finally:
     app.podman = _real_ntfy_podman
 

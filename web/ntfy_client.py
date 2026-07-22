@@ -32,6 +32,8 @@ OPS_TOPIC = "tlr-ops"
 MEDIA_TOPIC_PREFIX = "tlr-media-"
 ADMIN_USER = "tailarr"
 PUB_USER = "tailarr-pub"
+# The admin phone's read-only account ("Alerts on your phone" card).
+ALERTS_USER = "tailarr-alerts"
 
 
 def load_conf():

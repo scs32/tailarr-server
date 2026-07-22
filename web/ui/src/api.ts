@@ -178,6 +178,16 @@ export const api = {
   ntfyTest: () =>
     postJSON<{ ok: boolean; error: string | null }>("/api/ntfy/test", {}),
 
+  ntfyAlerts: (action: "issue" | "revoke") =>
+    postJSON<{
+      ok: boolean;
+      error: string | null;
+      url?: string;
+      topics?: string[];
+      token?: string;
+      status?: NtfyStatus;
+    }>("/api/ntfy/alerts", { do: action }),
+
   stats: () => getJSON<StatsSnapshot>("/api/stats"),
 
   users: () => getJSON<UsersStatus>("/api/users"),
