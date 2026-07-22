@@ -5,6 +5,7 @@ import { Catalog } from "./pages/Catalog";
 import { Shares } from "./pages/Shares";
 import { Network } from "./pages/Network";
 import { Monitor } from "./pages/Monitor";
+import { Notifications } from "./pages/Notifications";
 import { Stats } from "./pages/Stats";
 import { Users } from "./pages/Users";
 import { Settings } from "./pages/Settings";
@@ -25,6 +26,7 @@ function Layout() {
           <Route path="/network" element={<Network />} />
           <Route path="/users" element={<Users />} />
           <Route path="/monitor" element={<Monitor />} />
+          <Route path="/notifications" element={<Notifications />} />
           <Route path="/stats" element={<Stats />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Dashboard />} />

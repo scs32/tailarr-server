@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { api } from "../api";
 import {
+  BellIcon,
   GridIcon,
   StoreIcon,
   ShareIcon,
@@ -20,6 +21,7 @@ const NAV = [
   { to: "/network", label: "Network", icon: NetworkIcon },
   { to: "/users", label: "Users", icon: UsersIcon },
   { to: "/monitor", label: "Monitor", icon: PulseIcon },
+  { to: "/notifications", label: "Notifications", icon: BellIcon },
   { to: "/stats", label: "Stats", icon: ChartIcon },
 ];
 

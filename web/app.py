@@ -40,7 +40,9 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.17.1"
+import ntfy_client  # local module beside app.py; stdlib-only
+
+VERSION = "0.18.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -48,6 +50,16 @@ STATIC_DIR = os.environ.get("STATIC_DIR", os.path.join(APP_DIR, "static"))
 PORT = int(os.environ.get("PORT", "8080"))
 
 CONTROLLER_PODS = {"tailarr", "podscale", "homepod"}  # older names = pre-rename deploys
+
+# System pods: infrastructure services the controller manages on the
+# operator's behalf (ntfy). Hidden from sharing entirely — no can- badge,
+# no grant lines, no Users-page row — so they never appear in any consumer
+# device's netmap (the §12 minimality invariant, docs/acl-design.md).
+# Unlike CONTROLLER_PODS they still wear their tag:tailarr-svc-* identity
+# tag and MAY be funneled (ntfy's user delivery path). Matched on image
+# substring, like _discover_kuma — the flag must survive engine re-renders
+# and hand-rolled installs, and .config.json carries no custom fields.
+SYSTEM_IMAGES = ("binwiederhier/ntfy",)
 
 # Host platform fact: written by the bootstrap (apple/container guests run
 # vminitd as PID 1 — that single fact drives the peer-relay offer and skips
@@ -490,9 +502,25 @@ def _check_updates():
             img = (pod_config(name) or {}).get("image", "")
             if img:
                 images[img] = None
+        prev = load_updates().get("images", {})
         results = {img: _image_update_status(img) for img in images}
         save_updates({"checked": time.time(), "images": results})
-        _check_release()  # piggyback the controller-release check (cached)
+        # Notify on the False->True transition only — the flag then stays
+        # set until the pod updates, and re-checks must not re-page.
+        fresh = sorted(img for img, r in results.items()
+                       if r.get("update")
+                       and not (prev.get(img) or {}).get("update"))
+        if fresh:
+            notify_ops("Pod updates available",
+                       "New image versions: " + ", ".join(fresh),
+                       tags=["arrow_up"])
+        prev_latest = load_release().get("latest", "")
+        latest = _check_release()  # piggybacked controller-release check
+        if latest and latest != prev_latest \
+                and _ver_key(latest) > _ver_key(VERSION):
+            notify_ops("Tailarr update available",
+                       f"v{latest} is out (this controller runs "
+                       f"v{VERSION}).", tags=["arrow_up"])
     finally:
         with _updates_lock:
             _updates_running = False
@@ -1124,8 +1152,16 @@ def save_user_nicks(data):
     os.replace(tmp, USERS_FILE)
 
 
+def _is_system(name):
+    """Infrastructure pods (SYSTEM_IMAGES): controller-managed, never
+    shareable, invisible to consumer devices. See the SYSTEM_IMAGES note."""
+    img = (pod_config(name) or {}).get("image", "")
+    return any(s in img for s in SYSTEM_IMAGES)
+
+
 def _shareable_services():
-    return [s for s in deployed_services() if s not in CONTROLLER_PODS]
+    return [s for s in deployed_services()
+            if s not in CONTROLLER_PODS and not _is_system(s)]
 
 
 def status_users():
@@ -1310,8 +1346,15 @@ def _managed_sections(relay_dst=None):
     owners += [f'"{t}": {OWN},'
                for t in ("tag:tailarr", "tag:tailarr-user",
                          "tag:tailarr-public", "tag:tailarr-can-server")]
-    for s in svcs:
+    # Identity tags exist for EVERY non-controller pod — ts_tag_sidecar
+    # applies tag:tailarr-svc-* to system pods too, so their tagOwners
+    # must be here or the tags API rejects the write and the pod reads
+    # identity "missing" forever. can- badges stay shareable-only: a
+    # system pod gets no badge, no grant line, and therefore no presence
+    # in any consumer netmap (§12).
+    for s in [x for x in deployed_services() if x not in CONTROLLER_PODS]:
         owners.append(f'"tag:tailarr-svc-{s}": {OWN},')
+    for s in svcs:
         owners.append(f'"tag:tailarr-can-{s}": {OWN},')
     # Peer relay: see _relay_sections. The cap grants RELAYING only, never
     # network access; BOTH ends of a connection need it.
@@ -2623,6 +2666,7 @@ def status_pods():
             "name": name,
             "state": pod_state(name, ps),
             "controller": name in CONTROLLER_PODS,
+            "system": any(s in image for s in SYSTEM_IMAGES),
             "image": image,
             "tailscale": info.get("include_tailscale") == "yes",
             "https": info.get("include_https") == "yes",
@@ -2655,6 +2699,7 @@ def status_catalog():
             "environment": spec.get("environment", {}),
             "volumes": spec.get("volumes", {}),
             "command": spec.get("command", ""),
+            "system": bool(spec.get("system")),
             "installed": installed,
             "state": pod_state(name, ps) if installed else "",
             "source": spec.get("_source", "built-in"),
@@ -3047,6 +3092,14 @@ def _run_action(name, action):
                            text=True, timeout=600)
         if r.returncode == 0:
             mark_image_fresh(info["image"])
+            notify_ops(f"{name} updated",
+                       f"Pulled {info['image']} and restarted the pod.",
+                       tags=["white_check_mark"])
+        else:
+            notify_ops(f"{name} update failed",
+                       "The new image pulled but the pod did not restart "
+                       "cleanly — check its logs.", priority="high",
+                       tags=["rotating_light"])
     elif action == "remove":
         # Uninstall: stop + remove the containers, then delete the pod's
         # directory (config, data dirs, and Tailscale identity included).
@@ -3063,6 +3116,11 @@ def _run_action(name, action):
                     os.remove(os.path.join(PODS_DIR, ".kuma.json"))
                 except OSError:
                     pass
+            # Removing ntfy invalidates every stored token (a reinstall
+            # starts a fresh auth.db) — drop the registries so the
+            # Notifications tab honestly reads "not configured".
+            if NTFY_IMAGE in info_rm.get("image", ""):
+                ntfy_client.clear()
     else:
         return {"ok": False, "name": name, "action": action, "status": "error",
                 "error": "Unknown action.", "output": ""}
@@ -3340,6 +3398,7 @@ def network_entry(name, ps):
     entry = {
         "name": name,
         "controller": name in CONTROLLER_PODS,
+        "system": any(s in info.get("image", "") for s in SYSTEM_IMAGES),
         "state": pod_state(name, ps),
         "tailscale": ts,
         "https": info.get("include_https") == "yes",
@@ -3609,6 +3668,317 @@ def op_monitor_pod(name, action):
         return {"ok": False, "name": name, "error": "Unknown action."}
     except Exception as e:
         return {"ok": False, "name": name, "error": f"Kuma call failed: {e}"}
+
+
+# =========================================================================
+# ntfy notifications (system pod) — registry + publish in ntfy_client.py,
+# podman-driving provisioning here beside the other exec ops. ntfy is the
+# first SYSTEM_IMAGES pod: hidden from sharing (no can- badge, no grant
+# lines, no consumer-netmap presence), reachable by pods over the fleet
+# intercom grant, funnel-able for phones outside the tailnet.
+# =========================================================================
+NTFY_IMAGE = "binwiederhier/ntfy"
+
+_ntfy_cache = {"at": 0.0, "entry": None}
+
+
+def _discover_ntfy(fresh=False):
+    """The deployed ntfy pod's network entry (image match, like Kuma).
+    Cached ~60s — publishes fire from background threads on every event
+    and must not each cost a podman exec."""
+    if not fresh and time.time() - _ntfy_cache["at"] < 60:
+        return _ntfy_cache["entry"]
+    entry = None
+    ps = ps_all()
+    for name in deployed_services():
+        if NTFY_IMAGE in (pod_config(name) or {}).get("image", ""):
+            entry = network_entry(name, ps)
+            break
+    _ntfy_cache["at"] = time.time()
+    _ntfy_cache["entry"] = entry
+    return entry
+
+
+def _ntfy_internal_url(entry):
+    """Plain http on the tailnet IP + service port: reachable by the
+    controller and every pod via the fleet intercom grant, no TLS needed
+    (the tailnet already encrypts)."""
+    if not entry or not entry.get("ip"):
+        return ""
+    port = next(iter(entry["ports"].values()), "80")
+    return f"http://{entry['ip']}:{port}"
+
+
+def _ntfy_server_yml(dns_name):
+    """The server.yml the controller owns. deny-all is the security model:
+    every topic needs an explicit account grant, so the funnel can be
+    opened without exposing anything. upstream-base-url relays a
+    content-free poll hint through ntfy.sh so iOS gets APNs push —
+    payloads never leave this server."""
+    lines = [
+        "# Managed by Tailarr (Notifications setup) — regenerated on every",
+        "# setup run; do not edit.",
+        "behind-proxy: true",
+        "auth-file: /etc/ntfy/auth.db",
+        "auth-default-access: deny-all",
+        "cache-file: /var/cache/ntfy/cache.db",
+        "attachment-cache-dir: /var/cache/ntfy/attachments",
+        'upstream-base-url: "https://ntfy.sh"',
+    ]
+    if dns_name:
+        lines.insert(2, f'base-url: "https://{dns_name}"')
+    return "\n".join(lines) + "\n"
+
+
+def _ntfy_cli(pod, *args, env=None):
+    """Run the ntfy CLI inside the pod. env pairs ride -e so secrets
+    (NTFY_PASSWORD) stay off the podman argv."""
+    pre = []
+    for k, v in (env or {}).items():
+        pre += ["-e", f"{k}={v}"]
+    return podman("exec", *pre, pod, "ntfy", *args, timeout=30)
+
+
+def _ntfy_provision(pod):
+    """Ensure the controller's two ntfy accounts + tokens exist.
+
+    Check-then-act throughout, so a crashed or repeated setup converges:
+    existing accounts keep their saved tokens; accounts missing from the
+    server (fresh install, or a wiped auth.db after reinstall) are
+    recreated WITH new tokens — saved tokens can't survive a new auth.db.
+    Returns (admin, publisher, error)."""
+    conf = ntfy_client.load_conf() or {}
+    listed = _ntfy_cli(pod, "user", "list")
+    if listed.returncode != 0:
+        return None, None, ("ntfy CLI unavailable: "
+                            + (listed.stdout + listed.stderr).strip()[-200:])
+    users_out = listed.stdout + listed.stderr  # the CLI lists on stderr
+    out = {}
+    for user, role, key in ((ntfy_client.ADMIN_USER, "admin", "admin"),
+                            (ntfy_client.PUB_USER, "user", "publisher")):
+        saved = conf.get(key) or {}
+        exists = f"user {user}" in users_out
+        password = (saved.get("password") if exists else None) \
+            or secrets.token_urlsafe(24)
+        if not exists:
+            r = _ntfy_cli(pod, "user", "add", f"--role={role}", user,
+                          env={"NTFY_PASSWORD": password})
+            if r.returncode != 0 and "exists" not in (r.stdout + r.stderr):
+                return None, None, (f"could not create {user}: "
+                                    + (r.stdout + r.stderr).strip()[-200:])
+        token = saved.get("token", "") if exists else ""
+        if not token:
+            r = _ntfy_cli(pod, "token", "add", user)
+            m = re.search(r"tk_[A-Za-z0-9_]+", r.stdout + r.stderr)
+            if r.returncode != 0 or not m:
+                return None, None, (f"could not mint a token for {user}: "
+                                    + (r.stdout + r.stderr).strip()[-200:])
+            token = m.group(0)
+        out[key] = {"user": user, "password": password, "token": token}
+    # The publisher may write every tailarr topic; per-user READ grants
+    # come later (badge mirroring) — deny-all covers everything else.
+    r = _ntfy_cli(pod, "access", ntfy_client.PUB_USER, "tlr-*", "write")
+    if r.returncode != 0:
+        return None, None, ("could not grant publish access: "
+                            + (r.stdout + r.stderr).strip()[-200:])
+    return out["admin"], out["publisher"], None
+
+
+def status_ntfy():
+    """Everything the Notifications tab needs."""
+    entry = _discover_ntfy(fresh=True)
+    conf = ntfy_client.load_conf()
+    state = ntfy_client.load_state()
+    info = pod_config(entry["name"]) if entry else None
+    return {
+        "installed": entry is not None,
+        "pod": entry["name"] if entry else None,
+        "state": entry["state"] if entry else "",
+        "configured": conf is not None,
+        "funnel_on": bool(info and info.get("funnel") == "yes"),
+        "public_url": (f"https://{entry['dns_name']}"
+                       if entry and entry.get("dns_name") else ""),
+        "ops_topic": ntfy_client.OPS_TOPIC,
+        "publish_error": state.get("last_publish_error") or None,
+        "error": None,
+    }
+
+
+def op_ntfy_setup(_data):
+    """Configure the deployed ntfy pod end-to-end. Idempotent: every step
+    checks before acting, so re-running after any failure converges.
+
+    write server.yml (into the host side of the /etc/ntfy volume — the
+    default install puts it under PODS_DIR, which the controller mounts)
+    -> restart the pod if the file changed -> provision accounts/tokens
+    via the ntfy CLI -> save the registry -> test-publish."""
+    entry = _discover_ntfy(fresh=True)
+    if not entry:
+        return {"ok": False,
+                "error": "No ntfy pod found — install ntfy from the "
+                         "catalog first."}
+    name = entry["name"]
+    info = pod_config(name) or {}
+    conf_dir = (info.get("volumes") or {}).get("/etc/ntfy", "")
+    if not conf_dir:
+        return {"ok": False,
+                "error": "The ntfy pod has no /etc/ntfy volume — reinstall "
+                         "it from the current catalog entry."}
+    yml = _ntfy_server_yml(entry.get("dns_name", ""))
+    yml_path = os.path.join(conf_dir, "server.yml")
+    try:
+        with open(yml_path) as f:
+            changed = f.read() != yml
+    except OSError:
+        changed = True
+    if changed:
+        try:
+            os.makedirs(conf_dir, exist_ok=True)
+            with open(yml_path + ".tmp", "w") as f:
+                f.write(yml)
+            os.replace(yml_path + ".tmp", yml_path)
+        except OSError as e:
+            return {"ok": False, "error": f"could not write server.yml: {e}"}
+        r = op_action(name, "start")  # run.sh recreates -> config applies
+        if not r["ok"]:
+            return {"ok": False, "error": "ntfy restart failed",
+                    "output": r.get("output", "")}
+    admin = publisher = None
+    err = "ntfy pod is not running"
+    for _attempt in range(5):  # the recreated container needs a beat
+        admin, publisher, err = _ntfy_provision(name)
+        if not err or "CLI unavailable" not in err:
+            break
+        time.sleep(2)
+    if err:
+        return {"ok": False, "error": err}
+    conf = ntfy_client.load_conf() or {}
+    conf.update({
+        "version": 1,
+        "pod": name,
+        "public_url": (f"https://{entry['dns_name']}"
+                       if entry.get("dns_name") else ""),
+        "admin": admin,
+        "publisher": publisher,
+        "topics": {"ops": ntfy_client.OPS_TOPIC,
+                   "media_prefix": ntfy_client.MEDIA_TOPIC_PREFIX},
+        "users": conf.get("users") or {},
+        "arr": conf.get("arr") or {},
+    })
+    ntfy_client.save_conf(conf)
+    entry = _discover_ntfy(fresh=True)  # IP may differ after the restart
+    test_err = ntfy_client.publish(
+        conf, _ntfy_internal_url(entry), ntfy_client.OPS_TOPIC,
+        "Tailarr", "Notifications are set up.")
+    return {"ok": True, "error": None, "test_error": test_err,
+            "status": status_ntfy()}
+
+
+def op_ntfy_test(_data):
+    """Synchronous test publish for the Notifications page button."""
+    conf = ntfy_client.load_conf()
+    if not conf:
+        return {"ok": False, "error": "ntfy is not configured — run setup."}
+    err = ntfy_client.publish(
+        conf, _ntfy_internal_url(_discover_ntfy(fresh=True)),
+        ntfy_client.OPS_TOPIC, "Tailarr", "Test notification.")
+    return {"ok": err is None, "error": err}
+
+
+_notify_state_lock = threading.Lock()
+
+
+def _notify_send(title, message, priority, tags):
+    conf = ntfy_client.load_conf()
+    if not conf:
+        return
+    err = ntfy_client.publish(conf, _ntfy_internal_url(_discover_ntfy()),
+                              ntfy_client.OPS_TOPIC, title, message,
+                              priority=priority, tags=tags)
+    with _notify_state_lock:
+        state = ntfy_client.load_state()
+        state["last_publish_error"] = err
+        state["last_publish_at"] = time.time()
+        ntfy_client.save_state(state)
+
+
+def notify_ops(title, message, priority="default", tags=None):
+    """Fire-and-forget an admin (ops-topic) notification.
+
+    A daemon thread + a never-raising publish: a down or unconfigured
+    ntfy must never break the operation that triggered the event. The
+    last failure is recorded for the Notifications page banner (an alert
+    about ntfy itself being down is undeliverable by definition)."""
+    if not ntfy_client.load_conf():
+        return
+    threading.Thread(target=_notify_send,
+                     args=(title, message, priority, tags),
+                     daemon=True).start()
+
+
+def _notify_health_pass():
+    """Publish pod-state / identity-tag transitions (maintenance loop).
+
+    De-dup lives in .notify-state.json: alerts fire on transitions only,
+    and a pod must look bad for TWO consecutive passes before its down
+    alert (a restart window must not page). Recoveries notify once."""
+    if not ntfy_client.load_conf():
+        return
+    ps = ps_all()
+    with _notify_state_lock:
+        state = ntfy_client.load_state()
+    seen = state.get("pods") or {}
+    pending = state.get("pending") or {}
+    idents = state.get("identity") or {}
+    new_seen, new_pending, new_idents = {}, {}, {}
+    for name in deployed_services():
+        cur = pod_state(name, ps)
+        known = seen.get(name)
+        if known is None:
+            new_seen[name] = cur  # first sighting: baseline, no alert
+        elif cur == known:
+            new_seen[name] = known
+        elif cur != "running":
+            n = pending.get(name, 0) + 1
+            if n >= 2:
+                notify_ops(f"{name} is {cur}",
+                           f"The {name} pod has been {cur} for two checks.",
+                           priority="high", tags=["rotating_light"])
+                new_seen[name] = cur
+            else:
+                new_pending[name] = n
+                new_seen[name] = known
+        else:
+            notify_ops(f"{name} recovered",
+                       f"The {name} pod is running again.",
+                       tags=["white_check_mark"])
+            new_seen[name] = cur
+        ident = _tag_state.get(name, "unknown")
+        new_idents[name] = ident
+        if ident == "missing" and idents.get(name) not in (None, "missing"):
+            notify_ops(f"{name} identity tag missing",
+                       f"{name}'s sidecar lost tag:tailarr-svc-{name} — "
+                       "user devices are being filtered.",
+                       priority="high", tags=["warning"])
+    res = _upgrade_last_result()
+    if res and res.get("finished") and \
+            res.get("finished") != state.get("upgrade_seen"):
+        if res.get("rolled_back"):
+            notify_ops("Controller upgrade rolled back",
+                       f"Upgrade to {res.get('to', '?')} failed its health "
+                       "check and rolled back.", priority="high",
+                       tags=["rotating_light"])
+        elif res.get("ok"):
+            notify_ops("Controller upgraded",
+                       f"Now running {res.get('to', '?')}.",
+                       tags=["white_check_mark"])
+        state["upgrade_seen"] = res.get("finished")
+    state.update({"pods": new_seen, "pending": new_pending,
+                  "identity": new_idents})
+    with _notify_state_lock:
+        merged = ntfy_client.load_state()
+        merged.update(state)
+        ntfy_client.save_state(merged)
 
 
 def op_share_add(name, host_path, container_path, ro):
@@ -4059,6 +4429,8 @@ def api_get(path):
         return 200, {"network": status_network()}
     if path == "/api/monitor":
         return 200, status_monitor()
+    if path == "/api/ntfy":
+        return 200, status_ntfy()
     if path == "/api/stats":
         return 200, status_stats()
     if path == "/api/users":
@@ -4257,6 +4629,14 @@ def api_post(path, data):
         result = op_monitor_setup(data)
         return (200 if result["ok"] else 400), result
 
+    if path == "/api/ntfy/setup":
+        result = op_ntfy_setup(data)
+        return (200 if result["ok"] else 400), result
+
+    if path == "/api/ntfy/test":
+        result = op_ntfy_test(data)
+        return (200 if result["ok"] else 400), result
+
     m = re.fullmatch(r"/api/monitor/pods/([a-z0-9][a-z0-9-]*)", path)
     if m:
         result = op_monitor_pod(m.group(1), (data.get("do") or "").strip())
@@ -4403,6 +4783,12 @@ def _maintenance_loop():
             ensure_controller_serve()
         except Exception as e:  # never let the self-heal thread die
             print(f"serve self-heal error: {e}")
+        try:
+            # Health/identity/upgrade-outcome notifications (transition-
+            # edge de-dup in .notify-state.json; no-op unless configured).
+            _notify_health_pass()
+        except Exception as e:
+            print(f"notify pass error: {e}")
         try:
             ts_reconcile_tags()
         except Exception as e:

@@ -1522,6 +1522,154 @@ code, data = post("/api/fs", {"do": "list", "path": "/"})
 check(code == 400 and not data["ok"] and data["error"],
       "podman-less environment reports a clean error")
 
+# --- ntfy system pod: hidden from sharing, setup, ops notifications -------
+# Install ntfy like any pod (the engine only renders scripts offline).
+code, data = post("/api/install", {
+    "custom": True, "service": "ntfy",
+    "image": "docker.io/binwiederhier/ntfy:v2.26.3",
+    "command": "serve",
+    "ports": {"80": "80"},
+    "volumes": {"/etc/ntfy": f"{pods}/ntfy/etc/ntfy",
+                "/var/cache/ntfy": f"{pods}/ntfy/cache"},
+    "authkey": "dummy-test-authkey-ntfy",
+})
+check(code == 200 and data["ok"], "ntfy installs like any pod")
+check(app._is_system("ntfy") and not app._is_system("apitest"),
+      "_is_system matches the ntfy image only")
+
+code, data = get("/api/pods")
+byname = {p["name"]: p for p in data["pods"]}
+check(byname["ntfy"]["system"] is True
+      and byname["apitest"]["system"] is False,
+      "/api/pods flags the system pod")
+check("ntfy" not in app._shareable_services()
+      and "apitest" in app._shareable_services(),
+      "system pod excluded from shareable services")
+code, data = get("/api/users")
+check("ntfy" not in data["services"] and "server" in data["services"],
+      "Users page never offers the system pod")
+
+secs = app._managed_sections()
+grants_text = "\n".join(secs["grants"])
+owners_text = "\n".join(secs["tagowners"])
+check("tag:tailarr-svc-ntfy" in owners_text,
+      "system pod keeps its svc- identity tagOwner (tag write must work)")
+check("can-ntfy" not in owners_text and "ntfy" not in grants_text,
+      "system pod gets no can- badge and NO grant lines (netmap-invisible)")
+check(app._grants_minimality_ok(secs["grants"])
+      and app._sections_prefix_ok(secs),
+      "system-pod sections still pass both policy invariants")
+
+code, data = get("/api/ntfy")
+check(code == 200 and data["installed"] and data["configured"] is False,
+      "GET /api/ntfy sees the deployed pod, unconfigured")
+code, data = post("/api/ntfy/test", {})
+check(code == 400 and "not configured" in data["error"],
+      "test publish before setup reports unconfigured")
+
+# Setup against a fake podman: the server.yml is pre-written so the
+# restart step is skipped (run.sh would need real podman); provisioning
+# drives the recorded ntfy CLI.
+conf_dir = os.path.join(pods, "ntfy", "etc", "ntfy")
+os.makedirs(conf_dir, exist_ok=True)
+with open(os.path.join(conf_dir, "server.yml"), "w") as f:
+    f.write(app._ntfy_server_yml(""))
+
+
+class FakeNtfyPodman:
+    """Simulates podman exec of the ntfy CLI; records everything."""
+
+    def __init__(self):
+        self.calls = []
+        self.users = set()
+
+    def __call__(self, *args, timeout=60):
+        a = list(args)
+        self.calls.append(a)
+        if a[0] == "ps":
+            return _sp.CompletedProcess(a, 0, "", "")
+        if a[0] == "exec" and "tailscale" in a:
+            return _sp.CompletedProcess(a, 1, "", "no sidecar")
+        if a[0] == "exec" and "ntfy" in a:
+            if "list" in a:
+                out = "\n".join(f"user {u} (role: x)" for u in self.users)
+                return _sp.CompletedProcess(a, 0, "", out)
+            if "add" in a and "user" in a:
+                self.users.add(a[-1])
+                return _sp.CompletedProcess(a, 0, "", "")
+            if "token" in a:
+                return _sp.CompletedProcess(
+                    a, 0, f"token tk_fake{len(self.calls)} created", "")
+            return _sp.CompletedProcess(a, 0, "", "")
+        return _sp.CompletedProcess(a, 0, "", "")
+
+
+_real_ntfy_podman = app.podman
+nfake = FakeNtfyPodman()
+app.podman = nfake
+try:
+    code, data = post("/api/ntfy/setup", {})
+    check(code == 200 and data["ok"],
+          "ntfy setup converges against the CLI (no restart needed)")
+    conf = app.ntfy_client.load_conf()
+    check(conf is not None
+          and conf["publisher"]["token"].startswith("tk_")
+          and conf["admin"]["user"] == "tailarr", "registry saved with tokens")
+    mode = os.stat(os.path.join(pods, ".ntfy.json")).st_mode & 0o777
+    check(mode == 0o600, ".ntfy.json is private (0600)")
+    check({"tailarr", "tailarr-pub"} <= nfake.users,
+          "both controller accounts created")
+    check(any("access" in c and "tlr-*" in c and "write" in c
+              for c in nfake.calls),
+          "publisher granted write on tlr-* only")
+    nfake.calls = []
+    code, data = post("/api/ntfy/setup", {})
+    check(code == 200 and data["ok"]
+          and not any("token" in c for c in nfake.calls),
+          "re-running setup keeps existing tokens (idempotent)")
+finally:
+    app.podman = _real_ntfy_podman
+
+# --- ops notifications: transition-edge de-dup + health debounce ----------
+_notes = []
+_real_notify_ops = app.notify_ops
+_real_ius = app._image_update_status
+_real_check_release = app._check_release
+app.notify_ops = (lambda title, message, priority="default", tags=None:
+                  _notes.append(title))
+app._image_update_status = lambda img: {"update": True, "error": None}
+app._check_release = lambda: None
+try:
+    app._check_updates()
+    first = len(_notes)
+    app._check_updates()
+    check(first == 1 and len(_notes) == first,
+          "update-available notifies once (False->True edge only)")
+
+    _notes.clear()
+    app.ntfy_client.save_state({"pods": {"apitest": "running"},
+                                "pending": {}, "identity": {}})
+    app._notify_health_pass()  # apitest reads stopped: pass 1 = debounce
+    check(not any("apitest" in n for n in _notes),
+          "first bad sighting does not page (debounce)")
+    app._notify_health_pass()  # pass 2: alert fires
+    check(any(n == "apitest is stopped" for n in _notes),
+          "second consecutive bad sighting alerts")
+    _notes.clear()
+    app._notify_health_pass()  # state now stopped: no re-alert
+    check(not _notes, "steady bad state never re-pages")
+    _real_pod_state = app.pod_state
+    app.pod_state = lambda name, ps: "running"
+    try:
+        app._notify_health_pass()
+    finally:
+        app.pod_state = _real_pod_state
+    check(any("recovered" in n for n in _notes), "recovery notifies once")
+finally:
+    app.notify_ops = _real_notify_ops
+    app._image_update_status = _real_ius
+    app._check_release = _real_check_release
+
 catsrv.shutdown()
 srv.shutdown()
 print("WEB API TEST PASSED")

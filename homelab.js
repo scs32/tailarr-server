@@ -218,6 +218,25 @@
     "restart_policy": "unless-stopped"
   },
   {
+    "name": "ntfy",
+    "image": "docker.io/binwiederhier/ntfy:v2.26.3",
+    "system": true,
+    "command": "serve",
+    "default_port": 80,
+    "volumes": {
+      "/path/to/config": "/etc/ntfy",
+      "/path/to/cache": "/var/cache/ntfy"
+    },
+    "environment": {
+      "TZ": "America/Los_Angeles"
+    },
+    "network_mode": "bridge",
+    "ports": {
+      "80": "80"
+    },
+    "restart_policy": "unless-stopped"
+  },
+  {
     "name": "uptime-kuma",
     "image": "louislam/uptime-kuma:latest",
     "default_port": 3001,

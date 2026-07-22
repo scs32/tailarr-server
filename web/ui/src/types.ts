@@ -21,6 +21,9 @@ export interface Pod {
   name: string;
   state: PodState;
   controller: boolean;
+  // Infrastructure pod (ntfy): controller-managed, never shareable,
+  // invisible to consumer devices. Managed from its own page, not here.
+  system: boolean;
   image: string;
   tailscale: boolean;
   https: boolean;
@@ -37,6 +40,7 @@ export interface Pod {
 export interface NetworkEntry {
   name: string;
   controller: boolean;
+  system: boolean;
   state: PodState;
   tailscale: boolean;
   https: boolean;
@@ -116,9 +120,23 @@ export interface CatalogItem {
   environment: Record<string, string>;
   volumes: Record<string, string>;
   command: string;
+  system: boolean; // installs as a hidden system pod (ntfy)
   installed: boolean;
   state: PodState | ""; // "" when not installed
   source: string; // "built-in" or a source name
+}
+
+// GET /api/ntfy — Notifications tab state (ntfy system pod).
+export interface NtfyStatus {
+  installed: boolean; // an ntfy pod is deployed
+  pod: string | null;
+  state: PodState | "";
+  configured: boolean; // setup has run (accounts + tokens saved)
+  funnel_on: boolean; // public HTTPS for phones outside the tailnet
+  public_url: string;
+  ops_topic: string;
+  publish_error: string | null; // last failed publish (ntfy down?)
+  error: string | null;
 }
 
 export interface Source {

@@ -15,6 +15,7 @@ import type {
   InstallResult,
   MonitorStatus,
   NetworkEntry,
+  NtfyStatus,
   Pod,
   PodConfigResult,
   ReconfigureRequest,
@@ -156,6 +157,19 @@ export const api = {
     postJSON<ActionResult>(`/api/network/${pod}`, body),
 
   monitor: () => getJSON<MonitorStatus>("/api/monitor"),
+
+  ntfy: () => getJSON<NtfyStatus>("/api/ntfy"),
+
+  ntfySetup: () =>
+    postJSON<{
+      ok: boolean;
+      error: string | null;
+      test_error?: string | null;
+      status?: NtfyStatus;
+    }>("/api/ntfy/setup", {}),
+
+  ntfyTest: () =>
+    postJSON<{ ok: boolean; error: string | null }>("/api/ntfy/test", {}),
 
   stats: () => getJSON<StatsSnapshot>("/api/stats"),
 

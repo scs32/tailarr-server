@@ -62,6 +62,14 @@ export function PodCard({
             </div>
           )}
         </div>
+        {pod.system && (
+          <span
+            className="chip"
+            title="System pod: Tailarr manages this service itself. It is never shareable and never appears to user devices; manage it from the Notifications page."
+          >
+            system
+          </span>
+        )}
         {pod.identity === "missing" && (
           <span
             className="chip chip--danger"
