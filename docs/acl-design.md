@@ -437,14 +437,20 @@ to ungranted services":
   its grant and the pod leaves the device's netmap on the next map push.
   Removing a service drops its grant + owner lines at the next sync.
 
-**Outside the fences** the README's operator-sovereignty line
-(`autogroup:admin → * ip:*`) makes every admin-owned device visible in
-every user netmap (reverse-direction rules count). That line is the
-human's, not ours; it's the accepted baseline of the dedicated-tailnet
-model. Anything else broad outside the fences (a leftover allow-all,
-ping rules touching `tag:tailarr-user`) breaks minimality — Tailarr
-cannot rewrite the human's policy, so this stays a documented audit
-item, checkable from the app's Status screen.
+**Outside the fences** the operator-sovereignty rule matters just as
+much: with `dst: ["*"]` it pairs every admin-owned device with every
+user device, making the admin's machines visible in every user netmap
+(reverse-direction rules count — live-confirmed 2026-07-22: a scoped
+device's netmap showed the admin's Mac). The README baseline therefore
+narrows it to `autogroup:admin → tag:tailarr` plus a separate
+`autogroup:member → autogroup:self` rule so the admin's own untagged
+devices still reach each other (tagged devices have no user owner, so
+`autogroup:self` never matches user enrollments or pods). The self rule
+also supplies the network grant Tailscale SSH's member→self rule needs.
+Anything else broad outside the fences (a leftover allow-all, ping
+rules touching `tag:tailarr-user`) breaks minimality — Tailarr cannot
+rewrite the human's policy, so this stays a documented audit item,
+checkable from the app's Status screen.
 
 **Enforcement**: `_grants_minimality_ok()` runs before every splice
 (including downgrade-ladder retries) and fails the sync closed if a
@@ -457,5 +463,7 @@ section, consciously.
 **Live audit recipe** (doubles as the E2E check): enroll a device with a
 minted user key, grant it exactly one service, and its peer list —
 Status screen or `tailscale status --json` — must show exactly that
-pod, plus admin devices (sovereignty line), plus the relay device iff
-relay is enabled. Toggle the grant off and the pod must disappear.
+pod, plus the relay device iff relay is enabled, and nothing else
+(under the narrowed README baseline; a wide `admin → *` sovereignty
+rule additionally surfaces every admin device). Toggle the grant off
+and the pod must disappear.

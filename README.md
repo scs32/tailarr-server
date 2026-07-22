@@ -32,18 +32,28 @@ through it. It is the install credential. Set it up once:
    [Access Controls file](https://login.tailscale.com/admin/acls) with
    the policy below. Because nothing else lives on the tailnet,
    default-deny is safe from the first save: your admin-owned devices
-   reach everything, and every other device reaches exactly the
-   services you grant it on the Users page — nothing else.
+   reach the whole fleet, and every other device reaches — and even
+   *sees* — exactly the services you grant it on the Users page.
+   Tailscale only hides a peer from a device when no rule connects
+   them at all, which is why the admin rule below deliberately avoids
+   `"dst": ["*"]`: that shape would put your personal machines in
+   every guest's device list.
 
    ```jsonc
    // Tailarr tailnet policy — the entire Access Controls file of a
    // dedicated tailnet. Edit anything outside the fenced regions;
    // never edit inside them (Tailarr regenerates their contents).
    {
-       // Operator sovereignty: admin-owned devices reach everything,
-       // always. This line is yours — Tailarr never touches it.
        "grants": [
-           {"src": ["autogroup:admin"], "dst": ["*"], "ip": ["*"]},
+           // Operator sovereignty: your devices reach the whole fleet.
+           // These lines are yours — Tailarr never touches them. dst is
+           // deliberately NOT "*": a rule allowing admin -> guest-device
+           // traffic would make every admin machine visible (name + IPs)
+           // in every guest's netmap, even with all ports closed.
+           {"src": ["autogroup:admin"], "dst": ["tag:tailarr"], "ip": ["*"]},
+           // Your own (untagged) devices still reach each other; tagged
+           // devices have no user owner, so this never touches guests.
+           {"src": ["autogroup:member"], "dst": ["autogroup:self"], "ip": ["*"]},
 
            // >>> tailarr-managed:grants
            // <<< tailarr-managed:grants
