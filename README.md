@@ -141,6 +141,32 @@ HTTPS, enrolled with a key Tailarr mints through your OAuth client.
 | Network | Host LAN + published ports | Per-service tailnet devices, HTTPS via ts.net |
 | App catalog | Curated store | `homelab.js` — a JSON file you edit |
 
+## Beyond deploys
+
+Installing pods is the start; the web UI manages the fleet from there:
+
+- **People, not devices.** Add a user on the Users page and hand them
+  one enrollment key — every device they enroll with it is theirs
+  automatically. Flip a service on for a person and all their devices
+  can reach it (and *see* nothing else on the tailnet); flip it off and
+  access is gone everywhere. Sharing is Tailscale ACLs under the hood,
+  authored for you.
+- **Notifications.** One click on the Notifications page sets up a
+  self-hosted notification service ([ntfy](https://ntfy.sh)) as a
+  hidden system pod: server alerts (pod down, upgrade results, updates
+  available) to your phone, Sonarr/Radarr/Lidarr/Readarr wired
+  automatically so downloads and upgrades notify, and a per-person feed
+  that mirrors exactly the services each user can access.
+- **A companion app that configures itself.** With the
+  [Tailarr iOS app](https://github.com/scs32/tailarr), a user's phone
+  asks a small gateway pod "what's mine?" — identity comes from the
+  tailnet wire, so there is nothing to type and no credentials to send
+  around.
+- **Self-upgrades and monitoring.** The controller updates itself from
+  GitHub releases and re-renders the fleet's scripts automatically; a
+  Stats page shows live per-pod CPU/memory; Uptime Kuma monitors are a
+  drag away on the Monitor page. Settings has themes, because why not.
+
 ## Adding a service
 
 Add an entry to `homelab.js`:
@@ -252,8 +278,9 @@ are overridable via env.
 > grant is authored by the controller — automatically only when the
 > tailnet passes a pre-flight check (policy adopted by Tailarr, small
 > device/user counts — i.e. it looks like the dedicated tailnet Tailarr
-> assumes). Otherwise nothing is touched and **Settings → Peer relay**
-> shows exactly what was found, with an explicit enable button. The
+> assumes). Otherwise nothing is touched and the **Network page's Peer
+> relay section** shows exactly what was found, with an explicit enable
+> button. The
 > grant carries only the relay *capability* (`tailscale.com/cap/relay`)
 > — it never opens network access, and your Mac is matched via
 > `autogroup:admin`, never by tagging your personal device.
@@ -327,7 +354,8 @@ relay on the Mac yourself:
 /Applications/Tailscale.app/Contents/MacOS/Tailscale set --relay-server-port=40000
 ```
 
-then check **Settings → Peer relay** in the web UI — it verifies from
+then check the **Network page's Peer relay section** in the web UI — it
+verifies from
 the controller's own sidecar and keeps nudging until traffic actually
 leaves DERP. Pods deployed before v0.13.0 also need their sidecar image
 updated (peer relays need Tailscale 1.86+ in the *client* too).
