@@ -8,7 +8,9 @@ can read.
 
 ## Quick start — web UI (recommended)
 
-On a Debian/Ubuntu host (a VM or container works great), with a
+On a Debian/Ubuntu host (a VM or container works great), **as root**
+(`sudo -i` first on cloud images — the controller drives the system
+podman socket), with a
 [Tailscale OAuth client](#the-tailscale-credential):
 
 ```sh
