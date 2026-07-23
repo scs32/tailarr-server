@@ -23,9 +23,9 @@ REPO_BASE_URL="https://raw.githubusercontent.com/scs32/tailarr-server/main"
 # forwarding through sudo's env filter; a clean re-run as root is simpler.
 if [[ "$(id -u)" -ne 0 ]]; then
     echo "[ERROR] Tailarr must be installed as root (the controller drives the system podman socket and installs boot units)." >&2
-    echo "        Become root and re-run, e.g.:" >&2
-    echo "          sudo -i" >&2
-    echo "          TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... bash -c \"\$(curl -fsSL $REPO_BASE_URL/install.sh)\"" >&2
+    echo "        Re-run the whole command under sudo:" >&2
+    echo "          sudo env TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... bash -c \"\$(curl -fsSL $REPO_BASE_URL/install.sh)\"" >&2
+    echo "        (plain sudo, NOT 'sudo -i' — -i re-quotes the inline script and silently runs nothing)" >&2
     exit 1
 fi
 
