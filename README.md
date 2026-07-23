@@ -8,14 +8,18 @@ can read.
 
 ## Quick start — web UI (recommended)
 
-On a Debian/Ubuntu host (a VM or container works great), **as root**
-(`sudo -i` first on cloud images — the controller drives the system
-podman socket), with a
+On a Debian/Ubuntu host (a VM or container works great), with a
 [Tailscale OAuth client](#the-tailscale-credential):
 
 ```sh
-TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr-server/main/install.sh)"
+sudo env TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr-server/main/install.sh)"
 ```
+
+The install must run as root (the controller drives the system podman
+socket) — drop the `sudo env` if you already are, e.g. inside a
+container guest. Don't swap it for `sudo -i`: with `-i`, sudo re-quotes
+the inline script for a login shell and folds it into a comment — the
+command silently does nothing.
 
 This installs podman, pulls the Tailarr controller image, and enrolls it
 on your tailnet. Then open **`https://tailarr.<your-tailnet>.ts.net`**
