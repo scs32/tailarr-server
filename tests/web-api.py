@@ -2309,6 +2309,7 @@ import urllib.request as _urlreq  # noqa: E402
 class _CapsResp:
     def __init__(self, body):
         self.body = body.encode()
+        self.status = 200
 
     def read(self, n=-1):
         return self.body
@@ -2320,20 +2321,62 @@ class _CapsResp:
         return False
 
 
+_caps_agents = []
+
+
+def _fake_urlopen(req, timeout=10):
+    # v0.25.1: the probe sends Request objects with a browser-shaped UA
+    # (Cloudflare 403s python-urllib's default — live-caught 07-23).
+    # caps is served unauthenticated (as on real indexers); only the
+    # t=search probe judges the key.
+    _caps_agents.append(req.get_header("User-agent", ""))
+    url = req.full_url
+    if "t=caps" in url:
+        return _CapsResp("<caps><server/></caps>")
+    return _CapsResp(
+        "<rss/>" if "goodkey" in url
+        else '<error code="101" description="Invalid API Key"/>')
+
+
 _real_urlopen = _urlreq.urlopen
-_urlreq.urlopen = lambda url, timeout=10: _CapsResp(
-    "<caps><server/></caps>" if "goodkey" in url
-    else '<error code="100" description="Incorrect user credentials"/>')
+_urlreq.urlopen = _fake_urlopen
 try:
     check(app._validate_newznab("https://indexer.test", "goodkey") is None,
-          "newznab caps probe passes a good indexer")
+          "newznab probe passes a good indexer + key")
+    check(_caps_agents and all(a.startswith("Mozilla/5.0")
+                               and "Tailarr" in a for a in _caps_agents),
+          "probes send a browser-shaped UA (Cloudflare 1010 fix)")
     err = app._validate_newznab("https://indexer.test", "badkey")
-    check(err is not None and "Incorrect user credentials" in err,
-          "newznab error XML surfaces the indexer's own message")
-    check(app._validate_newznab("indexer.test", "k") is not None,
-          "indexer URL must include the scheme")
+    check(err is not None and "Invalid API Key" in err,
+          "open caps + bad key is caught by the authenticated search")
+    check(app._validate_newznab("indexer.test", "goodkey") is None,
+          "schemeless indexer URL is forgiven (https assumed)")
+    check(app._validate_newznab("", "k") is not None
+          and app._validate_newznab("https://nodots", "k") is not None,
+          "empty or hostname-less indexer input still refused")
 finally:
     _urlreq.urlopen = _real_urlopen
+
+# Paste-shape forgiveness (v0.25.1, live-caught: known-good accounts
+# failed validation on raw input shapes).
+check(app._indexer_base("api.nzbgeek.info/api?t=caps&apikey=zz")
+      == "https://api.nzbgeek.info/api"
+      and app._indexer_pasted_key(
+          "https://api.nzbgeek.info/api?t=caps&apikey=zz") == "zz",
+      "full pasted API URLs reduce to base; embedded apikey recovered")
+check(app._usenet_host("ssl://news.eweka.nl:563/") == ("news.eweka.nl", 563)
+      and app._usenet_host("news.eweka.nl") == ("news.eweka.nl", None),
+      "news-server paste shapes normalize (scheme/port/path stripped)")
+_ninp, _nerrs = app._stack_inputs(
+    {"media": "/srv/media",
+     "indexer": {"url": "https://idx.test/api?apikey=fromurl", "key": ""},
+     "usenet": {"host": "nntps://news.test:8563", "port": 563,
+                "ssl": True, "user": "u", "password": "p"}})
+check(_ninp["indexer"]["key"] == "fromurl"
+      and _ninp["indexer"]["url"] == "https://idx.test/api"
+      and _ninp["usenet"]["host"] == "news.test"
+      and _ninp["usenet"]["port"] == 8563,
+      "inputs normalize: URL-borne key honored, embedded port wins")
 
 
 class _FakeNNTP:

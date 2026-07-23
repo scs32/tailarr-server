@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.25.0"
+VERSION = "0.25.1"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -5110,31 +5110,84 @@ def _clean(s, n=200):
     return re.sub(r"[\r\n\t\0]", "", str(s or "")).strip()[:n]
 
 
+# Nearly every indexer sits behind Cloudflare, whose default rules 403
+# Python's stock User-Agent (error 1010) — live-caught 2026-07-23 when
+# validation failed against known-good accounts on NZBgeek/NZBFinder/
+# DrunkenSlug. A browser-shaped product UA passes all three.
+_NEWZNAB_UA = f"Mozilla/5.0 (compatible; Tailarr/{VERSION})"
+
+
+def _indexer_base(url):
+    """Forgive real-world paste shapes: scheme optional (https assumed),
+    a full API URL (query string and all) reduces to its base, trailing
+    slashes dropped."""
+    u = _clean(url, 300)
+    if u and not re.match(r"^https?://", u):
+        u = "https://" + u
+    return u.split("?", 1)[0].rstrip("/")
+
+
+def _indexer_pasted_key(url):
+    """The apikey buried in a pasted full API URL, if any — so leaving
+    the key field empty still works when the URL already carries it."""
+    q = urllib.parse.urlparse(_clean(url, 300)).query
+    return (urllib.parse.parse_qs(q).get("apikey") or [""])[0]
+
+
+def _newznab_get(url):
+    """One indexer request. Returns (status, body) — the body is read
+    even on HTTP errors, because indexers put their real answer in
+    error XML behind 401s."""
+    req = urllib.request.Request(url, headers={"User-Agent": _NEWZNAB_UA})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status, r.read(65536).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, e.read(65536).decode("utf-8", "replace")
+        except OSError:
+            return e.code, ""
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        return 0, str(getattr(e, "reason", e))[:80]
+
+
+def _newznab_error(body):
+    m = re.search(r'<error[^>]*description="([^"]+)"', body or "")
+    return m.group(1)[:120] if m else None
+
+
 def _validate_newznab(url, key):
-    """One live caps probe against the indexer. None = good, else a
-    human-readable failure."""
-    url = _clean(url).rstrip("/")
-    if not re.match(r"^https?://", url):
-        return "Enter the indexer URL including http:// or https://"
+    """Two live probes against the indexer: caps (is this a newznab
+    API?), then an authenticated search (is the KEY good? — caps is
+    served WITHOUT auth on major indexers, live-caught 07-23, so caps
+    alone would bless a wrong key). None = good, else human-readable."""
+    url = _indexer_base(url)
+    if not url or "." not in urllib.parse.urlparse(url).netloc:
+        return "Enter the indexer's address (e.g. https://api.nzbgeek.info)."
     probes = [url] if url.endswith("/api") else [url + "/api", url]
+    qkey = urllib.parse.quote(_clean(key))
     last = "no response"
     for probe in probes:
-        full = f"{probe}?t=caps&apikey={urllib.parse.quote(_clean(key))}"
-        try:
-            with urllib.request.urlopen(full, timeout=10) as r:
-                body = r.read(65536).decode("utf-8", "replace")
-        except urllib.error.HTTPError as e:
-            last = f"HTTP {e.code}"
+        status, body = _newznab_get(f"{probe}?t=caps&apikey={qkey}")
+        if status == 0:
+            last = body or "no response"
             continue
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
-            last = str(getattr(e, "reason", e))[:80]
+        err = _newznab_error(body)
+        if err:
+            return f"The indexer says: {err}"
+        if "<caps" not in body:
+            last = (f"HTTP {status}" if status != 200
+                    else "unexpected response (not a newznab API?)")
             continue
-        if "<caps" in body:
-            return None
-        m = re.search(r'<error[^>]*description="([^"]+)"', body)
-        if m:
-            return f"The indexer says: {m.group(1)[:120]}"
-        last = "unexpected response (not a newznab API endpoint?)"
+        # caps proved the endpoint; now prove the key on an
+        # authenticated call. Transport hiccups here don't fail the
+        # check — reachability is already established.
+        status, body = _newznab_get(
+            f"{probe}?t=search&q=test&limit=1&apikey={qkey}")
+        err = _newznab_error(body)
+        if err:
+            return f"The indexer says: {err}"
+        return None
     return f"Could not verify the indexer ({last})."
 
 
@@ -5190,18 +5243,36 @@ def _validate_usenet(host, port, use_ssl, user, password):
             pass
 
 
+def _usenet_host(raw):
+    """Forgive real-world paste shapes for the news server: scheme
+    prefixes (ssl://, nntps://…) and trailing paths are dropped; an
+    embedded :port is split out and returned (None when absent)."""
+    h = re.sub(r"^[A-Za-z+]+://", "", _clean(raw, 200)).split("/", 1)[0]
+    port = None
+    if ":" in h:
+        h, _, p = h.partition(":")
+        if p.isdigit():
+            port = int(p)
+    return h.strip(), port
+
+
 def _stack_inputs(data):
-    """Normalize + sanity-check the wizard's inputs. Returns
-    (inputs, errors-by-field)."""
+    """Normalize + sanity-check the wizard's inputs — forgivingly: fix
+    the paste shapes people actually produce rather than bouncing them.
+    Returns (inputs, errors-by-field)."""
     idx = data.get("indexer") or {}
     use = data.get("usenet") or {}
+    host, embedded_port = _usenet_host(use.get("host"))
     inputs = {
         "media": _clean(data.get("media"), 300),
-        "indexer": {"url": _clean(idx.get("url")).rstrip("/"),
-                    "key": _clean(idx.get("key"))},
-        "usenet": {"host": _clean(use.get("host"), 120),
-                   "port": use.get("port") or (563 if use.get("ssl", True)
-                                               else 119),
+        "indexer": {"url": _indexer_base(idx.get("url")),
+                    # A full pasted API URL often carries the key —
+                    # honor it when the key field was left empty.
+                    "key": _clean(idx.get("key"))
+                    or _indexer_pasted_key(idx.get("url"))},
+        "usenet": {"host": host,
+                   "port": embedded_port or use.get("port")
+                   or (563 if use.get("ssl", True) else 119),
                    "ssl": bool(use.get("ssl", True)),
                    "user": _clean(use.get("user"), 120),
                    "password": _clean(use.get("password"), 120)},
