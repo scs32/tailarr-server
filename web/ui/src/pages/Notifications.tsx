@@ -18,8 +18,15 @@ export function Notifications() {
   const [status, setStatus] = useState<NtfyStatus | null>(null);
   const { flash, show, clear } = useFlash();
   const [busy, setBusy] = useState<
-    "" | "setup" | "test" | "funnel" | "alerts"
+    "" | "setup" | "test" | "funnel" | "alerts" | "wire"
   >("");
+  const [recipe, setRecipe] = useState<{
+    pod: string;
+    server: string;
+    username: string;
+    password: string;
+    topic: string;
+  } | null>(null);
   const [confirming, setConfirming] = useState<"" | "setup" | "funnel">("");
   const [handout, setHandout] = useState<{
     url: string;
@@ -87,6 +94,26 @@ export function Notifications() {
     } finally {
       setBusy("");
       setConfirming("");
+    }
+  }
+
+  async function wire(pod: string) {
+    setBusy("wire");
+    setRecipe(null);
+    try {
+      const r = await api.ntfyWire(pod);
+      if (r.ok) {
+        show({
+          kind: "ok",
+          text: `${pod} now publishes media events to ${r.topic}.`,
+        });
+      } else {
+        show({ kind: "err", text: r.error ?? "Wiring failed." });
+        if (r.recipe) setRecipe({ pod, ...r.recipe });
+      }
+      await refresh();
+    } finally {
+      setBusy("");
     }
   }
 
@@ -282,6 +309,76 @@ export function Notifications() {
               </button>
             </div>
           </div>
+
+          {status.arr.length > 0 && (
+            <>
+              <div className="section-title">Media events</div>
+              <div className="card panel">
+                <p className="field__hint">
+                  Each media app publishes its download/import events to its
+                  own topic — users who hold that service's badge receive
+                  them automatically. Wiring is one click: Tailarr
+                  configures the app's built-in ntfy connection for you.
+                </p>
+                <div className="row-list">
+                  {status.arr.map((a) => (
+                    <div key={a.name} className="row">
+                      <div>
+                        <div className="row__title">
+                          {a.name}{" "}
+                          {a.wired ? (
+                            <span className="chip chip--installed">
+                              wired ({a.wired})
+                            </span>
+                          ) : (
+                            <span className="chip">not wired</span>
+                          )}
+                        </div>
+                        <div className="row__meta">
+                          topic <code>{a.topic}</code>
+                        </div>
+                      </div>
+                      <div className="spacer" />
+                      <button
+                        className={
+                          "btn btn--sm" +
+                          (a.wired ? " btn--ghost" : " btn--primary") +
+                          (busy === "wire" ? " btn--loading" : "")
+                        }
+                        disabled={!!busy}
+                        title={
+                          a.wired
+                            ? "Safe to re-run: updates the existing connection"
+                            : "Configure this app's ntfy connection automatically"
+                        }
+                        onClick={() => wire(a.name)}
+                      >
+                        {a.wired ? "Re-wire" : "Wire up"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                {recipe && (
+                  <div
+                    className="card"
+                    style={{ marginTop: "var(--sp-3)", padding: "var(--sp-3)" }}
+                  >
+                    <div className="row__title">
+                      Manual recipe for {recipe.pod}
+                    </div>
+                    <div className="row__meta">
+                      In {recipe.pod}: Settings → Connect → add “ntfy” with
+                      server <code>{recipe.server}</code>, username{" "}
+                      <code>{recipe.username}</code>, password{" "}
+                      <code>{recipe.password}</code>, topic{" "}
+                      <code>{recipe.topic}</code>, and turn on “On Import” /
+                      “On Upgrade”.
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
 
           <div className="section-title">Alerts on your phone</div>
           <div className="card panel">

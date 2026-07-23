@@ -178,6 +178,19 @@ export const api = {
   ntfyTest: () =>
     postJSON<{ ok: boolean; error: string | null }>("/api/ntfy/test", {}),
 
+  ntfyWire: (pod: string) =>
+    postJSON<{
+      ok: boolean;
+      error: string | null;
+      topic?: string;
+      recipe?: {
+        server: string;
+        username: string;
+        password: string;
+        topic: string;
+      };
+    }>(`/api/ntfy/wire/${pod}`, {}),
+
   ntfyAlerts: (action: "issue" | "revoke") =>
     postJSON<{
       ok: boolean;

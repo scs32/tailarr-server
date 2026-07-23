@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.21.0"
+VERSION = "0.22.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -4288,6 +4288,7 @@ def status_ntfy():
         "ops_topic": ntfy_client.OPS_TOPIC,
         "alerts_issued": bool((conf or {}).get("alerts")),
         "gateway": GATEWAY_POD in deployed_services(),
+        "arr": _arr_status(),
         "publish_error": state.get("last_publish_error") or None,
         "error": None,
     }
@@ -4424,8 +4425,21 @@ def op_ntfy_setup(_data):
         gateway_error = _ensure_gateway()
     except Exception as e:  # noqa: BLE001 — never fail setup on this
         gateway_error = str(e)
+    # And converge media wiring for any Arr not wired yet (best-effort;
+    # per-pod failures surface as rows with a manual recipe in the UI).
+    wire_errors = {}
+    for arr in _arr_status():
+        if arr["wired"]:
+            continue
+        try:
+            wr = op_ntfy_wire(arr["name"])
+            if not wr["ok"]:
+                wire_errors[arr["name"]] = wr.get("error")
+        except Exception as e:  # noqa: BLE001
+            wire_errors[arr["name"]] = str(e)
     return {"ok": True, "error": None, "test_error": test_err,
             "funnel_error": funnel_error, "gateway_error": gateway_error,
+            "wire_errors": wire_errors or None,
             "status": status_ntfy()}
 
 
@@ -4621,6 +4635,167 @@ def op_gateway_resolve(data):
         return {"ok": False,
                 "error": "this device is not assigned to a user"}
     return op_person_notify(uid)
+
+
+# =========================================================================
+# Media events — automated Arr wiring (ntfy phase 2). The controller
+# configures each Arr's NATIVE ntfy Connect notification for it: API key
+# read from the pod's own config.xml, the connection created/updated via
+# the Arr's API over the tailnet, pointed at ntfy's tailnet URL with the
+# publisher credentials and the pod's tlr-media-<name> topic (the same
+# topic the person badge mirror grants read access to). Field names are
+# mapped from the Arr's OWN /notification/schema — versions drift — and
+# any mismatch falls back to a copy-paste manual recipe in the UI.
+# =========================================================================
+ARR_KINDS = {"sonarr": "v3", "radarr": "v3",
+             "lidarr": "v1", "readarr": "v1"}
+
+
+def _arr_kind(name):
+    """(kind, api version) when a deployed pod is a supported Arr."""
+    img = (pod_config(name) or {}).get("image", "")
+    for k, ver in ARR_KINDS.items():
+        if k in img:
+            return k, ver
+    return None, None
+
+
+def _arr_api_key(pod):
+    """The Arr's own API key, from its config.xml inside the pod."""
+    r = podman("exec", pod, "cat", "/config/config.xml", timeout=15)
+    if r.returncode != 0:
+        return None
+    m = re.search(r"<ApiKey>([^<]+)</ApiKey>", r.stdout)
+    return m.group(1).strip() if m else None
+
+
+def _arr_req(base, key, method, path, body=None):
+    """One authenticated Arr API call. Returns (status, parsed-json)."""
+    req = urllib.request.Request(
+        base + path,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"X-Api-Key": key, "Content-Type": "application/json"},
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status, json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.load(e)
+        except ValueError:
+            return e.code, None
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+        return 0, str(e)
+
+
+def _arr_recipe(pod):
+    """The copy-paste fallback when automation can't map the fields."""
+    conf = ntfy_client.load_conf() or {}
+    pub = conf.get("publisher") or {}
+    return {"server": _ntfy_internal_url(_discover_ntfy()),
+            "username": pub.get("user", ""),
+            "password": pub.get("password", ""),
+            "topic": ntfy_client.MEDIA_TOPIC_PREFIX + pod}
+
+
+def op_ntfy_wire(pod):
+    """Wire one Arr's native ntfy Connect notification automatically.
+    Idempotent: an existing "Tailarr ntfy" connection is updated in
+    place. Any schema surprise returns ok:False WITH the manual recipe
+    so the UI degrades to copy-paste instead of a dead end."""
+    conf = ntfy_client.load_conf()
+    if not conf:
+        return {"ok": False, "error": "ntfy is not configured — run setup."}
+    kind, ver = _arr_kind(pod)
+    if not kind:
+        return {"ok": False, "error": "Not a supported media app."}
+    entry = network_entry(pod, ps_all())
+    port = next(iter(entry["ports"].values()), "")
+    if not entry.get("ip") or not port:
+        return {"ok": False, "recipe": _arr_recipe(pod),
+                "error": f"{pod} has no reachable tailnet address yet."}
+    key = _arr_api_key(pod)
+    if not key:
+        return {"ok": False, "recipe": _arr_recipe(pod),
+                "error": f"could not read {pod}'s API key (pod running?)."}
+    base = f"http://{entry['ip']}:{port}/api/{ver}"
+    ntfy_url = _ntfy_internal_url(_discover_ntfy())
+    topic = ntfy_client.MEDIA_TOPIC_PREFIX + pod
+    pub = conf.get("publisher") or {}
+    code, schemas = _arr_req(base, key, "GET", "/notification/schema")
+    if code != 200 or not isinstance(schemas, list):
+        return {"ok": False, "recipe": _arr_recipe(pod),
+                "error": f"schema probe failed (HTTP {code})."}
+    item = next((s for s in schemas
+                 if (s.get("implementation") or "").lower() == "ntfy"), None)
+    if not item:
+        return {"ok": False, "recipe": _arr_recipe(pod),
+                "error": f"{pod} has no ntfy notification type."}
+    names = {f.get("name") for f in item.get("fields") or []}
+    if "serverUrl" not in names or "topics" not in names:
+        return {"ok": False, "recipe": _arr_recipe(pod),
+                "error": "unrecognized ntfy field layout — wire manually."}
+    fields = []
+    for f in item.get("fields") or []:
+        f = dict(f)
+        n = f.get("name")
+        if n == "serverUrl":
+            f["value"] = ntfy_url
+        elif n == "topics":
+            f["value"] = [topic]
+        elif n == "accessToken" and pub.get("token"):
+            f["value"] = pub["token"]
+        elif n == "userName" and not ("accessToken" in names
+                                      and pub.get("token")):
+            f["value"] = pub.get("user", "")
+        elif n == "password" and not ("accessToken" in names
+                                      and pub.get("token")):
+            f["value"] = pub.get("password", "")
+        fields.append(f)
+    payload = dict(item)
+    payload.update({"name": "Tailarr ntfy", "fields": fields,
+                    "onGrab": False, "onDownload": True,
+                    "onUpgrade": True, "onRename": False,
+                    "onHealthIssue": False})
+    code, existing = _arr_req(base, key, "GET", "/notification")
+    if code != 200 or not isinstance(existing, list):
+        return {"ok": False, "recipe": _arr_recipe(pod),
+                "error": f"could not list notifications (HTTP {code})."}
+    prev = next((n for n in existing
+                 if n.get("name") == "Tailarr ntfy"), None)
+    if prev:
+        payload["id"] = prev["id"]
+        code, resp = _arr_req(base, key, "PUT",
+                              f"/notification/{prev['id']}", payload)
+    else:
+        code, resp = _arr_req(base, key, "POST", "/notification", payload)
+    if code not in (200, 201, 202):
+        detail = ""
+        if isinstance(resp, list) and resp and isinstance(resp[0], dict):
+            detail = ": " + str(resp[0].get("errorMessage", ""))[:120]
+        return {"ok": False, "recipe": _arr_recipe(pod),
+                "error": f"{pod} rejected the connection "
+                         f"(HTTP {code}){detail}"}
+    conf = ntfy_client.load_conf() or {}
+    conf.setdefault("arr", {})[pod] = {"wired": "auto", "topic": topic}
+    ntfy_client.save_conf(conf)
+    return {"ok": True, "error": None, "name": pod, "topic": topic}
+
+
+def _arr_status():
+    """Per-Arr wiring rows for the Notifications page."""
+    conf = ntfy_client.load_conf() or {}
+    wired = conf.get("arr") or {}
+    out = []
+    for name in deployed_services():
+        kind, _ = _arr_kind(name)
+        if not kind:
+            continue
+        out.append({"name": name, "kind": kind,
+                    "topic": ntfy_client.MEDIA_TOPIC_PREFIX + name,
+                    "wired": (wired.get(name) or {}).get("wired") or ""})
+    return out
 
 
 _notify_state_lock = threading.Lock()
@@ -5401,6 +5576,11 @@ def api_post(path, data):
 
     if path == "/api/gateway/resolve":
         result = op_gateway_resolve(data)
+        return (200 if result["ok"] else 400), result
+
+    m = re.fullmatch(r"/api/ntfy/wire/([a-z0-9][a-z0-9-]*)", path)
+    if m:
+        result = op_ntfy_wire(m.group(1))
         return (200 if result["ok"] else 400), result
 
     m = re.fullmatch(r"/api/monitor/pods/([a-z0-9][a-z0-9-]*)", path)

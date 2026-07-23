@@ -137,6 +137,8 @@ export interface NtfyStatus {
   ops_topic: string;
   alerts_issued: boolean; // an admin phone credential exists
   gateway: boolean; // self-config gateway pod deployed (Tailarr app)
+  // Media apps and their wiring state ("auto" | "manual" | "").
+  arr: { name: string; kind: string; topic: string; wired: string }[];
   publish_error: string | null; // last failed publish (ntfy down?)
   error: string | null;
 }
