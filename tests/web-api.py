@@ -2286,6 +2286,242 @@ finally:
     app._controller_image = _real_cvg_img
     app._run_rerender = _real_cvg_rr
 
+# --- Magic Stacks (v0.25.0): guardrail, validators, seeding, wiring ------
+# The pods dir already contains sonarr + nzbget from earlier suites, so
+# the greenfield guardrail must trip for usenet-starter here.
+code, data = get("/api/stacks")
+_st = next(s for s in data["stacks"] if s["key"] == "usenet-starter")
+check(code == 200 and not _st["eligible"]
+      and "sonarr" in _st["blockers"] and "nzbget" in _st["blockers"]
+      and "radarr" not in _st["blockers"],
+      "greenfield guardrail: existing kinds block the stack, absent don't")
+code, data = post("/api/stacks", {"do": "install",
+                                  "stack": "usenet-starter"})
+check(code == 400 and "recreate existing services" in data["error"],
+      "install refuses when the guardrail is tripped")
+code, data = post("/api/stacks", {"do": "nonsense"})
+check(code == 400, "unknown stack action is refused")
+
+# Validators, against fakes (no network).
+import urllib.request as _urlreq  # noqa: E402
+
+
+class _CapsResp:
+    def __init__(self, body):
+        self.body = body.encode()
+
+    def read(self, n=-1):
+        return self.body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+_real_urlopen = _urlreq.urlopen
+_urlreq.urlopen = lambda url, timeout=10: _CapsResp(
+    "<caps><server/></caps>" if "goodkey" in url
+    else '<error code="100" description="Incorrect user credentials"/>')
+try:
+    check(app._validate_newznab("https://indexer.test", "goodkey") is None,
+          "newznab caps probe passes a good indexer")
+    err = app._validate_newznab("https://indexer.test", "badkey")
+    check(err is not None and "Incorrect user credentials" in err,
+          "newznab error XML surfaces the indexer's own message")
+    check(app._validate_newznab("indexer.test", "k") is not None,
+          "indexer URL must include the scheme")
+finally:
+    _urlreq.urlopen = _real_urlopen
+
+
+class _FakeNNTP:
+    """Scripted NNTP server: greeting, then AUTHINFO USER/PASS."""
+
+    def __init__(self, good):
+        self.good = good
+        self.lines = [b"200 news.test ready\r\n"]
+
+    def makefile(self, mode):
+        return self
+
+    def readline(self):
+        return self.lines.pop(0) if self.lines else b""
+
+    def write(self, b):
+        if b.startswith(b"AUTHINFO USER"):
+            self.lines.append(b"381 password required\r\n")
+        elif b.startswith(b"AUTHINFO PASS"):
+            self.lines.append(b"281 welcome\r\n" if self.good
+                              else b"481 bad credentials\r\n")
+
+    def flush(self):
+        pass
+
+    def close(self):
+        pass
+
+
+_real_conn = app.socket.create_connection
+app.socket.create_connection = (lambda addr, timeout=10:
+                                _FakeNNTP(addr[0] == "good.news.test"))
+try:
+    check(app._validate_usenet("good.news.test", 119, False, "u", "p")
+          is None, "NNTP validator signs in against a good account")
+    err = app._validate_usenet("bad.news.test", 119, False, "u", "p")
+    check(err is not None and "Sign-in failed" in err,
+          "NNTP validator surfaces a refused sign-in")
+finally:
+    app.socket.create_connection = _real_conn
+
+# nzbget seeding: seed-once guardrail + the actual write.
+_nzconf_dir = os.path.join(pods, "nzbget", "config")
+os.makedirs(_nzconf_dir, exist_ok=True)
+_nzconf = os.path.join(_nzconf_dir, "nzbget.conf")
+with open(_nzconf, "w") as f:
+    f.write("MainDir=/config\nServer1.Active=no\nServer1.Host=\n"
+            "Server1.Port=119\nServer1.Username=\nServer1.Password=\n")
+
+
+class _RestartFake:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, *args, timeout=60):
+        self.calls.append(list(args))
+        return _sp.CompletedProcess(args, 0, "", "")
+
+
+_rf = _RestartFake()
+_real_st_podman = app.podman
+app.podman = _rf
+try:
+    _use = {"host": "news.test", "port": 563, "ssl": True,
+            "user": "u1", "password": "pw1"}
+    detail = app._stack_seed_nzbget(_use)
+    text = open(_nzconf).read()
+    check("Server1.Host=news.test" in text
+          and "Server1.Password=pw1" in text
+          and "Server1.Encryption=yes" in text
+          and "Server1.Active=yes" in text
+          and any(c[:2] == ["restart", "nzbget"] for c in _rf.calls),
+          "usenet account seeds into nzbget.conf and the pod restarts")
+    _rf.calls.clear()
+    detail = app._stack_seed_nzbget({**_use, "host": "other.news"})
+    check("left untouched" in detail and not _rf.calls
+          and "Server1.Host=news.test" in open(_nzconf).read(),
+          "seed-once guardrail: an occupied Server1 is never overwritten")
+finally:
+    app.podman = _real_st_podman
+
+# Arr wiring: schema-driven create-or-update with category + baseUrl
+# mapping.
+_wire_calls = []
+_DL_SCHEMA = [{"implementation": "Nzbget",
+               "configContract": "NzbgetSettings",
+               "fields": [{"name": "host"}, {"name": "port"},
+                          {"name": "useSsl"}, {"name": "username"},
+                          {"name": "password"}, {"name": "tvCategory"}]}]
+_IDX_SCHEMA = [{"implementation": "Newznab",
+                "fields": [{"name": "baseUrl"}, {"name": "apiKey"},
+                           {"name": "categories", "value": [5030]}]}]
+
+
+def _fake_wire_req(base, key, method, path, body=None):
+    _wire_calls.append((method, path, body))
+    if method == "GET" and path == "/downloadclient/schema":
+        return 200, _DL_SCHEMA
+    if method == "GET" and path == "/indexer/schema":
+        return 200, _IDX_SCHEMA
+    if method == "GET" and path in ("/downloadclient", "/indexer",
+                                    "/rootfolder"):
+        return 200, []
+    if method == "POST":
+        return 201, {}
+    return 404, None
+
+
+_real_wire_req = app._arr_req
+_real_wait_arr = app._stack_wait_arr
+app._arr_req = _fake_wire_req
+app._stack_wait_arr = lambda pod: ("http://100.64.0.5:8989/api/v3",
+                                   "arr-key")
+app.podman = _RestartFake()  # exec mkdir succeeds
+try:
+    _inp = {"media": "/srv/media",
+            "indexer": {"url": "https://indexer.test/api", "key": "ik"},
+            "usenet": _use}
+    detail = app._stack_wire_arr("sonarr", _inp, "100.64.0.9",
+                                 {"user": "u1", "password": "pw1"})
+    dl = next(b for m, p, b in _wire_calls
+              if m == "POST" and p == "/downloadclient")
+    dlf = {f["name"]: f.get("value") for f in dl["fields"]}
+    check(dl["name"] == "Tailarr nzbget" and dlf["host"] == "100.64.0.9"
+          and dlf["tvCategory"] == "tv" and dlf["password"] == "pw1",
+          "download client wired from schema; category matched by suffix")
+    idx = next(b for m, p, b in _wire_calls
+               if m == "POST" and p == "/indexer")
+    idf = {f["name"]: f.get("value") for f in idx["fields"]}
+    check(idx["name"] == "Tailarr indexer"
+          and idf["baseUrl"] == "https://indexer.test"
+          and idf["apiKey"] == "ik" and idx["enableRss"] is True,
+          "indexer wired; /api suffix stripped from baseUrl")
+    rfb = next(b for m, p, b in _wire_calls
+               if m == "POST" and p == "/rootfolder")
+    check(rfb == {"path": "/data/media/tv"},
+          "root folder created under the shared /data mount")
+finally:
+    app._arr_req = _real_wire_req
+    app._stack_wait_arr = _real_wait_arr
+    app.podman = _real_st_podman
+
+# Worker end-to-end: all primitives faked, saga must land every step.
+_real_w_install = app.op_install
+_real_w_action = app.op_action
+_real_w_seed = app._stack_seed_nzbget
+_real_w_wire = app._stack_wire_arr
+_real_w_net = app.network_entry
+_real_w_auth = app._service_auth
+app.op_install = lambda req: {"ok": True, "name": req["name"],
+                              "error": None, "output": ""}
+app.op_action = lambda name, action: {"ok": True, "status": "ok",
+                                      "error": None}
+app._stack_seed_nzbget = lambda usenet: "news server configured"
+app._stack_wire_arr = lambda pod, i, ip, auth: "wired"
+app.network_entry = (lambda name, ps: {"ip": "100.64.0.9", "ports":
+                     {"6789": "6789"}, "dns_name": "", "https": False})
+app._service_auth = lambda pod, kind: {"user": "u", "password": "p"}
+try:
+    _spec = app.STACKS["usenet-starter"]
+    app._save_stack_run({"stack": "usenet-starter", "state": "running",
+                         "started": 1, "finished": None, "error": None,
+                         "steps": app._stack_steps_for(_spec)})
+    app._stack_worker("usenet-starter", _inp)
+    _run = app.load_stack_run()
+    check(_run["state"] == "done"
+          and all(s["state"] == "ok" for s in _run["steps"]),
+          "worker saga completes every step and finishes done")
+    app._save_stack_run({"stack": "usenet-starter", "state": "running",
+                         "started": 1, "finished": None, "error": None,
+                         "steps": app._stack_steps_for(_spec)})
+    app._stack_wire_arr = (lambda pod, i, ip, auth:
+                           (_ for _ in ()).throw(
+                               app._StackAbort("schema probe failed")))
+    app._stack_worker("usenet-starter", _inp)
+    _run = app.load_stack_run()
+    check(_run["state"] == "failed"
+          and "schema probe failed" in (_run["error"] or "")
+          and any(s["state"] == "failed" for s in _run["steps"]),
+          "a failing step stops the run with the step's message")
+finally:
+    app.op_install = _real_w_install
+    app.op_action = _real_w_action
+    app._stack_seed_nzbget = _real_w_seed
+    app._stack_wire_arr = _real_w_wire
+    app.network_entry = _real_w_net
+    app._service_auth = _real_w_auth
+
 catsrv.shutdown()
 srv.shutdown()
 print("WEB API TEST PASSED")

@@ -27,6 +27,10 @@ import type {
   Share,
   ShareResult,
   Source,
+  StackInputs,
+  StackInstallResult,
+  StacksStatus,
+  StackValidateResult,
   StatsSnapshot,
   TokensStatus,
   TsApiCredential,
@@ -159,6 +163,12 @@ export const api = {
   monitor: () => getJSON<MonitorStatus>("/api/monitor"),
 
   ntfy: () => getJSON<NtfyStatus>("/api/ntfy"),
+
+  stacks: () => getJSON<StacksStatus>("/api/stacks"),
+  stackValidate: (body: StackInputs) =>
+    postJSON<StackValidateResult>("/api/stacks", { ...body, do: "validate" }),
+  stackInstall: (body: StackInputs) =>
+    postJSON<StackInstallResult>("/api/stacks", { ...body, do: "install" }),
 
   ntfySetup: () =>
     postJSON<{

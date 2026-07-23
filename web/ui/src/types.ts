@@ -483,3 +483,64 @@ export interface FsMkdirResult {
   path: string;
   error: string | null;
 }
+
+// Magic Stacks (v0.25.0)
+export interface MagicStack {
+  key: string;
+  name: string;
+  blurb: string;
+  services: string[];
+  blockers: string[];
+  eligible: boolean;
+}
+
+export interface StackStep {
+  key: string;
+  label: string;
+  state: "pending" | "running" | "ok" | "failed";
+  detail: string;
+}
+
+export interface StackRun {
+  stack: string;
+  state: "running" | "done" | "failed";
+  started: number;
+  finished: number | null;
+  error: string | null;
+  steps: StackStep[];
+}
+
+export interface StacksStatus {
+  stacks: MagicStack[];
+  run: StackRun | null;
+}
+
+export interface StackCheck {
+  ok: boolean;
+  error: string | null;
+}
+
+export interface StackInputs {
+  stack: string;
+  media: string;
+  indexer: { url: string; key: string };
+  usenet: {
+    host: string;
+    port: number | string;
+    ssl: boolean;
+    user: string;
+    password: string;
+  };
+}
+
+export interface StackValidateResult {
+  ok: boolean;
+  error: string | null;
+  checks: { media: StackCheck; indexer: StackCheck; usenet: StackCheck };
+}
+
+export interface StackInstallResult {
+  ok: boolean;
+  error: string | null;
+  checks?: StackValidateResult["checks"];
+}

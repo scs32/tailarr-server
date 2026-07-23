@@ -576,3 +576,14 @@ a:hover { text-decoration: underline; }
 .upgrade-step--active .upgrade-step__dot { color: var(--accent); }
 .upgrade-step--done .upgrade-step__dot { color: var(--ok); }
 .upgrade-step__idle { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .5; }
+
+/* Magic Stacks (catalog wizard) */
+.stack-card { display: flex; flex-direction: column; gap: var(--sp-3); }
+.stack-card__name { font-weight: 600; letter-spacing: .01em; }
+.stack-card__services { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.stack-checks { display: flex; flex-direction: column; gap: var(--sp-2); margin-top: var(--sp-4); }
+.check-row { font-size: var(--fs-sm, 13px); }
+.check-row--ok { color: var(--ok); }
+.check-row--err { color: var(--danger); }
+.step--failed .step__dot { border-color: var(--danger); color: var(--danger); }
+.step--failed .step__label { color: var(--danger); }

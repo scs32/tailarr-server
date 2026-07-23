@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import type { BuiltinCatalog, CatalogItem, Source } from "../types";
+import type {
+  BuiltinCatalog,
+  CatalogItem,
+  MagicStack,
+  Source,
+  StacksStatus,
+} from "../types";
 import { api } from "../api";
 import { AddCustomPodModal } from "../components/AddCustomPodModal";
+import { MagicStackWizard } from "../components/MagicStackWizard";
 import { CatalogCard } from "../components/CatalogCard";
 import { InstallModal } from "../components/InstallModal";
 import { SourcesPanel } from "../components/SourcesPanel";
@@ -29,6 +36,8 @@ export function Catalog() {
   const [query, setQuery] = useState("");
   const [showSources, setShowSources] = useState(false);
   const [showAddCustom, setShowAddCustom] = useState(false);
+  const [stacks, setStacks] = useState<StacksStatus | null>(null);
+  const [wizardStack, setWizardStack] = useState<MagicStack | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
@@ -36,10 +45,15 @@ export function Catalog() {
 
   const load = useCallback(async () => {
     try {
-      const [c, s] = await Promise.all([api.catalog(), api.sources()]);
+      const [c, s, st] = await Promise.all([
+        api.catalog(),
+        api.sources(),
+        api.stacks().catch(() => null),
+      ]);
       setCatalog(c);
       setSources(s.sources);
       setCatalogs(s.catalogs);
+      setStacks(st);
       setError("");
     } catch (e) {
       setError(String(e));
@@ -193,6 +207,48 @@ export function Catalog() {
         </button>
       </div>
 
+      {stacks && stacks.stacks.length > 0 && (
+        <>
+          <h2 className="section-title">Magic Stacks</h2>
+          <div className="grid" style={{ marginBottom: "var(--sp-6)" }}>
+            {stacks.stacks.map((st) => {
+              const active =
+                stacks.run?.state === "running" && stacks.run.stack === st.key;
+              const blocked = !st.eligible && !active;
+              return (
+                <div key={st.key} className="card stack-card">
+                  <span className="stack-card__name">{st.name}</span>
+                  <p style={{ color: "var(--muted)", margin: 0 }}>{st.blurb}</p>
+                  <div className="stack-card__services">
+                    {st.services.map((svc) => (
+                      <span key={svc} className="chip">
+                        {svc}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="preview-row" style={{ marginTop: "auto" }}>
+                    <button
+                      className="btn btn--primary btn--sm"
+                      disabled={blocked}
+                      title={
+                        blocked && st.blockers.length
+                          ? `Magic Stacks can't recreate existing services (${st.blockers.join(", ")})`
+                          : blocked
+                            ? "A stack setup is already running"
+                            : "One short form — Tailarr wires everything else"
+                      }
+                      onClick={() => setWizardStack(st)}
+                    >
+                      {active ? "View progress" : "Set up"}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+
       {catalog && filtered.length === 0 ? (
         <p style={{ color: "var(--muted)" }}>
           No services match “{query.trim()}”.
@@ -225,6 +281,18 @@ export function Catalog() {
           onClose={() => {
             setInstalling(null);
             if (installParam) navigate("/catalog", { replace: true });
+          }}
+          onChanged={load}
+        />
+      )}
+
+      {wizardStack && (
+        <MagicStackWizard
+          stack={wizardStack}
+          initialRun={stacks?.run ?? null}
+          onClose={() => {
+            setWizardStack(null);
+            load();
           }}
           onChanged={load}
         />

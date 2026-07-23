@@ -31,6 +31,8 @@ import secrets
 import shlex
 import shutil
 import signal
+import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -42,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.24.0"
+VERSION = "0.25.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -5002,6 +5004,532 @@ def _arr_status():
     return out
 
 
+# =========================================================================
+# Magic Stacks (v0.25.0) — curated bundles the wizard deploys AND fully
+# wires. A stack qualifies as "magic" only when every internal connection
+# is auto-wireable and every collected input is a genuine external secret
+# (indexer key, usenet account) — never derivable busywork. v1 guardrail
+# (DECIDED): greenfield-only — if any pod of a bundled kind already
+# exists, the stack is ineligible ("Magic Stacks can't recreate existing
+# services"); the adopt-don't-replace model is future work. Inputs are
+# validated BEFORE anything deploys (newznab caps probe + a raw NNTP
+# sign-in) and are used in-flight only — never persisted. Run state lives
+# in .stacks.json (steps only, no secrets); the saga runs in a background
+# thread the UI polls via GET /api/stacks.
+# =========================================================================
+STACKS_FILE = os.path.join(PODS_DIR, ".stacks.json")
+
+STACKS = {
+    "usenet-starter": {
+        "name": "Usenet Starter",
+        "blurb": "TV and movies over usenet — search, download and "
+                 "import, fully connected out of the box.",
+        "services": ["sonarr", "radarr", "nzbget"],
+        "inputs": ["media", "indexer", "usenet"],
+    },
+}
+
+# Per-Arr wiring facts: root folder under the shared /data mount + the
+# download category the Arr tells nzbget to file things under.
+STACK_ARR_ROOTS = {"sonarr": ("/data/media/tv", "tv"),
+                   "radarr": ("/data/media/movies", "movies")}
+
+
+def load_stack_run():
+    try:
+        with open(STACKS_FILE) as f:
+            data = json.load(f)
+        return data.get("run") if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _save_stack_run(run):
+    tmp = STACKS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"run": run}, f, indent=2)
+    os.replace(tmp, STACKS_FILE)
+
+
+_stack_lock = threading.Lock()
+
+
+def _stack_step_set(key, state, detail=""):
+    with _stack_lock:
+        run = load_stack_run()
+        if not run:
+            return
+        for s in run["steps"]:
+            if s["key"] == key:
+                s["state"] = state
+                s["detail"] = detail
+        _save_stack_run(run)
+
+
+def _stack_finish(state, error=None):
+    with _stack_lock:
+        run = load_stack_run()
+        if not run:
+            return
+        run["state"] = state
+        run["error"] = error
+        run["finished"] = int(time.time())
+        _save_stack_run(run)
+
+
+def stack_blockers(spec):
+    """Deployed pods that collide with a stack's services — the v1
+    greenfield guardrail. Kind-matched (a pod named `tv` running the
+    sonarr image still blocks), not just name-matched."""
+    kinds = set(spec["services"])
+    out = set()
+    for name in deployed_services():
+        if name in kinds or (_service_kind(name) or "") in kinds \
+                or (_arr_kind(name)[0] or "") in kinds:
+            out.add(name)
+    return sorted(out)
+
+
+def status_stacks():
+    run = load_stack_run()
+    stacks = []
+    for key, spec in STACKS.items():
+        blockers = stack_blockers(spec)
+        stacks.append({
+            "key": key, "name": spec["name"], "blurb": spec["blurb"],
+            "services": spec["services"], "blockers": blockers,
+            "eligible": not blockers
+            and not (run and run["state"] == "running"),
+        })
+    return {"stacks": stacks, "run": run}
+
+
+def _clean(s, n=200):
+    """Inputs travel into config files and wire protocols — strip
+    control characters so nothing can smuggle an extra line."""
+    return re.sub(r"[\r\n\t\0]", "", str(s or "")).strip()[:n]
+
+
+def _validate_newznab(url, key):
+    """One live caps probe against the indexer. None = good, else a
+    human-readable failure."""
+    url = _clean(url).rstrip("/")
+    if not re.match(r"^https?://", url):
+        return "Enter the indexer URL including http:// or https://"
+    probes = [url] if url.endswith("/api") else [url + "/api", url]
+    last = "no response"
+    for probe in probes:
+        full = f"{probe}?t=caps&apikey={urllib.parse.quote(_clean(key))}"
+        try:
+            with urllib.request.urlopen(full, timeout=10) as r:
+                body = r.read(65536).decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            last = f"HTTP {e.code}"
+            continue
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            last = str(getattr(e, "reason", e))[:80]
+            continue
+        if "<caps" in body:
+            return None
+        m = re.search(r'<error[^>]*description="([^"]+)"', body)
+        if m:
+            return f"The indexer says: {m.group(1)[:120]}"
+        last = "unexpected response (not a newznab API endpoint?)"
+    return f"Could not verify the indexer ({last})."
+
+
+def _validate_usenet(host, port, use_ssl, user, password):
+    """A real NNTP sign-in against the provider — greeting, AUTHINFO
+    USER/PASS, expect 281. None = good, else a human-readable failure."""
+    host = _clean(host, 120)
+    if not host:
+        return "Enter the news server hostname."
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return "Port must be a number (563 for SSL, 119 for plain)."
+    try:
+        raw = socket.create_connection((host, port), timeout=10)
+    except (OSError, TimeoutError) as e:
+        return f"Could not connect: {str(e)[:100]}"
+    try:
+        if use_ssl:
+            raw = ssl.create_default_context().wrap_socket(
+                raw, server_hostname=host)
+        f = raw.makefile("rwb")
+
+        def talk(line=None):
+            if line is not None:
+                f.write(line.encode() + b"\r\n")
+                f.flush()
+            return (f.readline() or b"").decode("utf-8", "replace").strip()
+
+        greet = talk()
+        if not greet.startswith(("200", "201")):
+            return ("The server refused the connection: "
+                    f"{greet[:80] or 'no greeting'}")
+        resp = talk(f"AUTHINFO USER {_clean(user, 120)}")
+        if resp.startswith("381"):
+            resp = talk(f"AUTHINFO PASS {_clean(password, 120)}")
+        if not resp.startswith("281"):
+            return f"Sign-in failed: {resp[:80] or 'no response'}"
+        try:
+            f.write(b"QUIT\r\n")
+            f.flush()
+        except OSError:
+            pass
+        return None
+    except ssl.SSLError as e:
+        return f"TLS handshake failed: {str(e)[:100]}"
+    except (OSError, TimeoutError) as e:
+        return f"Connection dropped: {str(e)[:100]}"
+    finally:
+        try:
+            raw.close()
+        except OSError:
+            pass
+
+
+def _stack_inputs(data):
+    """Normalize + sanity-check the wizard's inputs. Returns
+    (inputs, errors-by-field)."""
+    idx = data.get("indexer") or {}
+    use = data.get("usenet") or {}
+    inputs = {
+        "media": _clean(data.get("media"), 300),
+        "indexer": {"url": _clean(idx.get("url")).rstrip("/"),
+                    "key": _clean(idx.get("key"))},
+        "usenet": {"host": _clean(use.get("host"), 120),
+                   "port": use.get("port") or (563 if use.get("ssl", True)
+                                               else 119),
+                   "ssl": bool(use.get("ssl", True)),
+                   "user": _clean(use.get("user"), 120),
+                   "password": _clean(use.get("password"), 120)},
+    }
+    errors = {}
+    m = inputs["media"]
+    if not m.startswith("/") or ".." in m.split("/"):
+        errors["media"] = "Pick an absolute folder on the host."
+    return inputs, errors
+
+
+def op_stack_validate(data):
+    """Live-check the wizard's inputs BEFORE anything deploys — the
+    green-checks step that makes a failed run near-impossible."""
+    inputs, errors = _stack_inputs(data)
+    checks = {"media": {"ok": "media" not in errors,
+                        "error": errors.get("media")}}
+    err = _validate_newznab(inputs["indexer"]["url"],
+                            inputs["indexer"]["key"])
+    checks["indexer"] = {"ok": not err, "error": err}
+    u = inputs["usenet"]
+    err = _validate_usenet(u["host"], u["port"], u["ssl"],
+                           u["user"], u["password"])
+    checks["usenet"] = {"ok": not err, "error": err}
+    ok = all(c["ok"] for c in checks.values())
+    return {"ok": ok, "error": None if ok
+            else "Fix the failing checks and validate again.",
+            "checks": checks}
+
+
+class _StackAbort(Exception):
+    pass
+
+
+def _stack_install_req(svc, media):
+    """The op_install request for one stack member: catalog spec with
+    default (pod-dir) volumes, except the shared /data mount which
+    points at the user's media folder."""
+    spec = resolve_service(svc)
+    if not spec:
+        raise _StackAbort(f"{svc} is not in the catalog")
+    volumes = {
+        cpath: (media if cpath == "/data"
+                else os.path.join(PODS_DIR, svc, cpath.lstrip("/")))
+        for _h, cpath in (spec.get("volumes") or {}).items()
+    }
+    return {
+        "name": svc, "custom": False,
+        "image": spec["image"], "command": spec.get("command", ""),
+        "ports": spec.get("ports", {}),
+        "environment": spec.get("environment", {}),
+        "volumes": volumes,
+        "restart_policy": spec.get("restart_policy", "unless-stopped"),
+        "shares": [], "authkey": "",
+        "config_file": spec.get("config_file", ""),
+        "config_set": spec.get("config_set") or {},
+    }
+
+
+def _stack_seed_nzbget(usenet):
+    """Write the news-server into nzbget's own config. The pod's
+    /config is the default pod-dir volume, so this is plain file IO on
+    the controller. Seed-once guardrail: an existing non-empty
+    Server1.Host is the user's provider — never overwritten."""
+    path = os.path.join(PODS_DIR, "nzbget", "config", "nzbget.conf")
+    deadline = time.time() + 120
+    while not os.path.isfile(path):
+        if time.time() > deadline:
+            raise _StackAbort("nzbget never wrote its config file")
+        time.sleep(3)
+    with open(path) as f:
+        text = f.read()
+    m = re.search(r"^Server1\.Host=(.+)$", text, re.MULTILINE)
+    if m and m.group(1).strip():
+        return "already configured — left untouched"
+    wanted = {
+        "Server1.Active": "yes",
+        "Server1.Host": usenet["host"],
+        "Server1.Port": str(usenet["port"]),
+        "Server1.Username": usenet["user"],
+        "Server1.Password": usenet["password"],
+        "Server1.Encryption": "yes" if usenet["ssl"] else "no",
+        "Server1.Connections": "8",
+    }
+    for k, v in wanted.items():
+        line = f"{k}={v}"
+        if re.search(rf"^{re.escape(k)}=.*$", text, re.MULTILINE):
+            text = re.sub(rf"^{re.escape(k)}=.*$", line.replace("\\", r"\\"),
+                          text, count=1, flags=re.MULTILINE)
+        else:
+            text += "\n" + line
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.replace(tmp, path)
+    r = podman("restart", "nzbget", timeout=120)
+    if r.returncode != 0:
+        raise _StackAbort("nzbget did not restart cleanly")
+    return "news server configured"
+
+
+def _stack_wait_arr(pod):
+    """Block until the Arr's API answers: sidecar up, config.xml
+    written, /system/status 200. Returns (base, key)."""
+    _kind, ver = _arr_kind(pod)
+    deadline = time.time() + 240
+    while time.time() < deadline:
+        entry = network_entry(pod, ps_all())
+        port = next(iter(entry["ports"].values()), "")
+        key = _arr_api_key(pod)
+        if entry.get("ip") and port and key:
+            base = f"http://{entry['ip']}:{port}/api/{ver}"
+            code, _resp = _arr_req(base, key, "GET", "/system/status")
+            if code == 200:
+                return base, key
+        time.sleep(5)
+    raise _StackAbort(f"{pod}'s API never came up")
+
+
+def _arr_err_detail(resp):
+    if isinstance(resp, list) and resp and isinstance(resp[0], dict):
+        return ": " + str(resp[0].get("errorMessage", ""))[:120]
+    if isinstance(resp, dict) and resp.get("message"):
+        return ": " + str(resp["message"])[:120]
+    return ""
+
+
+def _stack_arr_ensure(base, key, path, implementation, name, values,
+                      extra=None):
+    """Create-or-update one named object (download client / indexer) in
+    an Arr from its own schema — the "Tailarr ntfy" convention: we own
+    what we name, and never touch anything else. `values` maps schema
+    field names to values; a callable value receives the field name
+    (used for the *Category fields, whose exact name varies by Arr)."""
+    code, schemas = _arr_req(base, key, "GET", path + "/schema")
+    if code != 200 or not isinstance(schemas, list):
+        raise _StackAbort(f"schema probe failed (HTTP {code})")
+    item = next((s for s in schemas
+                 if (s.get("implementation") or "").lower()
+                 == implementation), None)
+    if not item:
+        raise _StackAbort(f"no {implementation} type in {path} schema")
+    fields = []
+    for f in item.get("fields") or []:
+        f = dict(f)
+        n = f.get("name") or ""
+        if n in values:
+            f["value"] = values[n]
+        else:
+            for k, v in values.items():
+                if callable(v) and v(n):
+                    f["value"] = v(n)
+                    break
+        fields.append(f)
+    payload = dict(item)
+    payload.update({"name": name, "enable": True, "fields": fields})
+    payload.update(extra or {})
+    code, existing = _arr_req(base, key, "GET", path)
+    if code != 200 or not isinstance(existing, list):
+        raise _StackAbort(f"could not list {path} (HTTP {code})")
+    prev = next((x for x in existing if x.get("name") == name), None)
+    if prev:
+        payload["id"] = prev["id"]
+        code, resp = _arr_req(base, key, "PUT",
+                              f"{path}/{prev['id']}", payload)
+    else:
+        code, resp = _arr_req(base, key, "POST", path, payload)
+    if code not in (200, 201, 202):
+        raise _StackAbort(
+            f"rejected (HTTP {code}){_arr_err_detail(resp)}")
+
+
+def _stack_wire_arr(pod, inputs, nz_ip, nz_auth):
+    """Everything one Arr needs: media folders, the download client,
+    the indexer. The Arr live-tests each object on save, so success
+    here is proof the whole chain connects."""
+    root, category = STACK_ARR_ROOTS[pod]
+    base, key = _stack_wait_arr(pod)
+    r = podman("exec", pod, "sh", "-c",
+               f"mkdir -p {root} && "
+               f"chown 1000:1000 /data/media {root} 2>/dev/null || true",
+               timeout=30)
+    if r.returncode != 0:
+        raise _StackAbort("could not create the media folder in /data")
+    code, roots = _arr_req(base, key, "GET", "/rootfolder")
+    if not any(x.get("path") == root for x in (roots or [])
+               if isinstance(x, dict)):
+        code, resp = _arr_req(base, key, "POST", "/rootfolder",
+                              {"path": root})
+        if code not in (200, 201):
+            raise _StackAbort(
+                f"root folder (HTTP {code}){_arr_err_detail(resp)}")
+    _stack_arr_ensure(
+        base, key, "/downloadclient", "nzbget", "Tailarr nzbget",
+        {"host": nz_ip, "port": 6789, "useSsl": False,
+         "username": nz_auth.get("user", ""),
+         "password": nz_auth.get("password", ""),
+         # The category field's exact name varies by Arr (tvCategory /
+         # movieCategory) — match by suffix.
+         "*category": lambda n: (category
+                                 if n.lower().endswith("category")
+                                 else None)},
+        extra={"protocol": "usenet"})
+    idx_url = inputs["indexer"]["url"]
+    if idx_url.endswith("/api"):
+        idx_url = idx_url[:-4]
+    _stack_arr_ensure(
+        base, key, "/indexer", "newznab", "Tailarr indexer",
+        {"baseUrl": idx_url, "apiKey": inputs["indexer"]["key"]},
+        extra={"enableRss": True, "enableAutomaticSearch": True,
+               "enableInteractiveSearch": True, "protocol": "usenet"})
+    return "folders, download client and indexer connected"
+
+
+def _stack_worker(key, inputs):
+    """The saga: deploy -> start -> seed nzbget -> wire each Arr ->
+    optional notifications. Steps stream into .stacks.json for the UI;
+    the first failure stops the run with the step's message."""
+    spec = STACKS[key]
+
+    def step(skey, fn):
+        _stack_step_set(skey, "running")
+        try:
+            detail = fn()
+        except _StackAbort as e:
+            _stack_step_set(skey, "failed", str(e))
+            raise
+        except Exception as e:  # pragma: no cover - belt+braces
+            _stack_step_set(skey, "failed", f"unexpected: {e}"[:200])
+            raise _StackAbort(str(e))
+        _stack_step_set(skey, "ok", detail if isinstance(detail, str)
+                        else "")
+
+    try:
+        for svc in spec["services"]:
+            def _install(svc=svc):
+                res = op_install(_stack_install_req(svc, inputs["media"]))
+                if not res["ok"]:
+                    raise _StackAbort(res.get("error")
+                                      or res.get("output", "")[-200:]
+                                      or "install failed")
+            step(f"install:{svc}", _install)
+        for svc in spec["services"]:
+            def _start(svc=svc):
+                res = op_action(svc, "start")
+                if not res["ok"]:
+                    raise _StackAbort(res.get("error") or res["status"])
+            step(f"start:{svc}", _start)
+        step("usenet", lambda: _stack_seed_nzbget(inputs["usenet"]))
+        nz_entry = network_entry("nzbget", ps_all())
+        nz_auth = _service_auth("nzbget", "nzbget") or {}
+        if not nz_entry.get("ip"):
+            raise _StackAbort("nzbget has no tailnet address yet")
+        for arr in [s for s in spec["services"] if s in STACK_ARR_ROOTS]:
+            step(f"wire:{arr}",
+                 lambda arr=arr: _stack_wire_arr(
+                     arr, inputs, nz_entry["ip"], nz_auth))
+
+        def _notify():
+            if not ntfy_client.load_conf():
+                return "notifications not set up — skipped"
+            wired = []
+            for arr in [s for s in spec["services"]
+                        if s in STACK_ARR_ROOTS]:
+                if op_ntfy_wire(arr).get("ok"):
+                    wired.append(arr)
+            return ("media alerts on: " + ", ".join(wired)) if wired \
+                else "could not wire media alerts (see Notifications)"
+        step("notify", _notify)
+        _stack_finish("done")
+        notify_ops("Magic Stack ready",
+                   f"{spec['name']} is deployed and fully wired.",
+                   tags=["sparkles"])
+    except _StackAbort as e:
+        _stack_finish("failed", str(e)[:300])
+        notify_ops("Magic Stack failed",
+                   f"{spec['name']}: {str(e)[:200]}",
+                   priority="high", tags=["rotating_light"])
+
+
+def _stack_steps_for(spec):
+    steps = []
+    for svc in spec["services"]:
+        steps.append({"key": f"install:{svc}", "label": f"Create {svc}",
+                      "state": "pending", "detail": ""})
+    for svc in spec["services"]:
+        steps.append({"key": f"start:{svc}", "label": f"Start {svc}",
+                      "state": "pending", "detail": ""})
+    steps.append({"key": "usenet", "label": "Connect your usenet account",
+                  "state": "pending", "detail": ""})
+    for arr in [s for s in spec["services"] if s in STACK_ARR_ROOTS]:
+        steps.append({"key": f"wire:{arr}",
+                      "label": f"Wire {arr} (folders, downloader, indexer)",
+                      "state": "pending", "detail": ""})
+    steps.append({"key": "notify", "label": "Media notifications",
+                  "state": "pending", "detail": ""})
+    return steps
+
+
+def op_stack_install(data):
+    """Kick off a stack run. Refuses when a run is active, when the
+    greenfield guardrail is tripped, or when validation fails — the
+    saga only ever starts from a fully green state."""
+    key = (data.get("stack") or "").strip()
+    spec = STACKS.get(key)
+    if not spec:
+        return {"ok": False, "error": "Unknown stack."}
+    run = load_stack_run()
+    if run and run["state"] == "running":
+        return {"ok": False, "error": "A stack setup is already running."}
+    blockers = stack_blockers(spec)
+    if blockers:
+        return {"ok": False, "error":
+                "Magic Stacks can't recreate existing services ("
+                + ", ".join(blockers) + ")."}
+    v = op_stack_validate(data)
+    if not v["ok"]:
+        return {"ok": False, "error": v["error"], "checks": v["checks"]}
+    inputs, _errs = _stack_inputs(data)
+    with _stack_lock:
+        _save_stack_run({"stack": key, "state": "running",
+                         "started": int(time.time()), "finished": None,
+                         "error": None, "steps": _stack_steps_for(spec)})
+    threading.Thread(target=_stack_worker, args=(key, inputs),
+                     daemon=True).start()
+    return {"ok": True, "error": None}
+
+
 _notify_state_lock = threading.Lock()
 
 
@@ -5548,6 +6076,8 @@ def api_get(path):
         return 200, status_monitor()
     if path == "/api/ntfy":
         return 200, status_ntfy()
+    if path == "/api/stacks":
+        return 200, status_stacks()
     if path == "/api/stats":
         return 200, status_stats()
     if path == "/api/users":
@@ -5760,6 +6290,16 @@ def api_post(path, data):
 
     if path == "/api/monitor/setup":
         result = op_monitor_setup(data)
+        return (200 if result["ok"] else 400), result
+
+    if path == "/api/stacks":
+        do = (data.get("do") or "").strip()
+        if do == "validate":
+            result = op_stack_validate(data)
+        elif do == "install":
+            result = op_stack_install(data)
+        else:
+            return 400, {"ok": False, "error": "Unknown action."}
         return (200 if result["ok"] else 400), result
 
     if path == "/api/ntfy/setup":
