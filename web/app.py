@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.23.0"
+VERSION = "0.24.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -4733,12 +4733,75 @@ def op_gateway_resolve(data):
 
 # Native app-module kinds the services handout fully configures: each has
 # a matching connection module in the Tailarr app AND an extractable
-# credential (the Arr config.xml ApiKey the ntfy wiring already reads).
-# Every other badged service still appears — as an "external" entry (URL
-# only) the app renders as a web bookmark, so nothing a badge grants is
-# ever invisible. nzbget/sabnzbd/tautulli extractors are the planned
-# release 2 of this contract.
-SERVICE_MODULE_KINDS = ("sonarr", "radarr", "lidarr")
+# credential, read live from the pod's own config the same way the ntfy
+# Arr wiring reads config.xml. Every other badged service still appears —
+# as an "external" entry (URL only) the app renders as a web bookmark, so
+# nothing a badge grants is ever invisible. Detection is by image
+# substring; jellyseerr's API is Overseerr-compatible, so it hands out as
+# type "overseerr" for the app's (dormant, contract-ready) module.
+SERVICE_MODULE_KINDS = ("sonarr", "radarr", "lidarr", "nzbget",
+                        "sabnzbd", "tautulli", "jellyseerr", "overseerr")
+
+
+def _service_kind(name):
+    """The handout type for a pod, or None (=> external entry)."""
+    img = (pod_config(name) or {}).get("image", "")
+    for k in SERVICE_MODULE_KINDS:
+        if k in img:
+            return "overseerr" if k == "jellyseerr" else k
+    return None
+
+
+def _conf_read(pod, path):
+    """One config file out of a running pod, or None."""
+    r = podman("exec", pod, "cat", path, timeout=15)
+    return r.stdout if r.returncode == 0 else None
+
+
+def _ini_value(text, key):
+    """First `key = value` (or key=value) line — the sabnzbd.ini /
+    Tautulli config.ini / nzbget.conf shape."""
+    m = re.search(rf"^\s*{re.escape(key)}\s*=\s*(\S+)\s*$", text,
+                  re.MULTILINE)
+    return m.group(1) if m else None
+
+
+def _service_auth(pod, kind):
+    """The credential handout for a native-kind pod, or None when it
+    can't be read (the app keeps the module and prompts). Same trust
+    math as the Arr key: every one of these is visible in the service's
+    own UI to anyone the badge already lets in."""
+    if kind in ("sonarr", "radarr", "lidarr"):
+        key = _arr_api_key(pod)
+        return {"api_key": key} if key else None
+    if kind == "nzbget":
+        text = _conf_read(pod, "/config/nzbget.conf") or ""
+        pw = _ini_value(text, "ControlPassword")
+        return {"user": _ini_value(text, "ControlUsername") or "",
+                "password": pw} if pw else None
+    if kind == "sabnzbd":
+        key = _ini_value(_conf_read(pod, "/config/sabnzbd.ini") or "",
+                         "api_key")
+        return {"api_key": key} if key else None
+    if kind == "tautulli":
+        key = _ini_value(_conf_read(pod, "/config/config.ini") or "",
+                         "api_key")
+        return {"api_key": key} if key else None
+    if kind == "overseerr":
+        # linuxserver/overseerr keeps config in /config;
+        # fallenbagel/jellyseerr in /app/config. Same settings.json.
+        for path in ("/config/settings.json",
+                     "/app/config/settings.json"):
+            text = _conf_read(pod, path)
+            if text is None:
+                continue
+            try:
+                key = ((json.loads(text) or {}).get("main") or {}) \
+                    .get("apiKey")
+            except ValueError:
+                key = None
+            return {"api_key": key} if key else None
+    return None
 
 
 def op_person_services(uid):
@@ -4769,14 +4832,8 @@ def op_person_services(uid):
             continue
         if svc not in valid:
             continue  # stale badge: the service is gone
-        kind, _ver = _arr_kind(svc)
-        if kind not in SERVICE_MODULE_KINDS:
-            kind = None
-        auth = None
-        if kind:
-            key = _arr_api_key(svc)
-            if key:
-                auth = {"api_key": key}
+        kind = _service_kind(svc)
+        auth = _service_auth(svc, kind) if kind else None
         services.append({
             "type": kind or "external", "name": svc,
             "url": service_url(network_entry(svc, ps)), "auth": auth})

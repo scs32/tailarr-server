@@ -2194,6 +2194,71 @@ finally:
     app._controller_dns = _real_svc_dns
     app.podman = _real_svc_podman
 
+# --- services handout release 2: the non-Arr credential extractors --------
+# nzbget (control user+password), sabnzbd + Tautulli (ini api_key),
+# overseerr/jellyseerr (settings.json main.apiKey; jellyseerr hands out
+# as type "overseerr" — its API is Overseerr-compatible — and keeps its
+# config under /app/config, exercising the path fallback).
+for _n, _img in [("nzbget", "linuxserver/nzbget:latest"),
+                 ("sabnzbd", "linuxserver/sabnzbd:latest"),
+                 ("tautulli", "linuxserver/tautulli:latest"),
+                 ("overseerr", "linuxserver/overseerr:latest"),
+                 ("jellyseerr", "fallenbagel/jellyseerr:latest")]:
+    _d = os.path.join(pods, _n)
+    os.makedirs(_d, exist_ok=True)
+    with open(os.path.join(_d, ".config.json"), "w") as f:
+        json.dump({"image": _img, "ports": {"80": "80"}}, f)
+    with open(os.path.join(_d, "run.sh"), "w") as f:
+        f.write("#!/bin/sh\nexit 0\n")
+
+_CONF_FILES = {
+    ("nzbget", "/config/nzbget.conf"):
+        "MainDir=/config\nControlUsername=nzbget\n"
+        "ControlPassword=dummy-test-pw\n",
+    ("sabnzbd", "/config/sabnzbd.ini"): "[misc]\napi_key = sab-key-1\n",
+    ("tautulli", "/config/config.ini"): "[General]\napi_key = taut-key-1\n",
+    ("overseerr", "/config/settings.json"):
+        json.dumps({"main": {"apiKey": "ovr-key-1"}}),
+    ("jellyseerr", "/app/config/settings.json"):
+        json.dumps({"main": {"apiKey": "jelly-key-1"}}),
+}
+
+
+class ConfFake:
+    def __call__(self, *args, timeout=60):
+        a = list(args)
+        if a[0] == "exec" and len(a) == 4 and a[2] == "cat":
+            body = _CONF_FILES.get((a[1], a[3]))
+            return _sp.CompletedProcess(a, 0 if body is not None else 1,
+                                        body or "", "")
+        return _sp.CompletedProcess(a, 1, "", "nope")
+
+
+_real_conf_podman = app.podman
+app.podman = ConfFake()
+try:
+    check(app._service_kind("nzbget") == "nzbget"
+          and app._service_kind("jellyseerr") == "overseerr"
+          and app._service_kind("apitest") is None,
+          "kind detection: native kinds, jellyseerr->overseerr, else None")
+    check(app._service_auth("nzbget", "nzbget")
+          == {"user": "nzbget", "password": "dummy-test-pw"},
+          "nzbget hands out its control user + password")
+    check(app._service_auth("sabnzbd", "sabnzbd")
+          == {"api_key": "sab-key-1"}
+          and app._service_auth("tautulli", "tautulli")
+          == {"api_key": "taut-key-1"},
+          "sabnzbd + Tautulli hand out their ini api_key")
+    check(app._service_auth("overseerr", "overseerr")
+          == {"api_key": "ovr-key-1"}
+          and app._service_auth("jellyseerr", "overseerr")
+          == {"api_key": "jelly-key-1"},
+          "overseerr reads settings.json; jellyseerr via /app/config")
+    check(app._service_auth("apitest", "sabnzbd") is None,
+          "unreadable config degrades to auth null, not an error")
+finally:
+    app.podman = _real_conf_podman
+
 # --- gateway converge: upgrades move the pod onto the new image -----------
 # The gateway runs the controller's image; after an upgrade a stale copy
 # wouldn't know new /self/* routes. Converge must repoint the saved

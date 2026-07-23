@@ -271,5 +271,39 @@
       "8181": "8181"
     },
     "restart_policy": "unless-stopped"
+  },
+  {
+    "name": "overseerr",
+    "image": "linuxserver/overseerr:latest",
+    "default_port": 5055,
+    "volumes": {
+      "/path/to/config": "/config"
+    },
+    "environment": {
+      "PUID": "1000",
+      "PGID": "1000",
+      "TZ": "America/Los_Angeles"
+    },
+    "network_mode": "bridge",
+    "ports": {
+      "5055": "5055"
+    },
+    "restart_policy": "unless-stopped"
+  },
+  {
+    "name": "jellyseerr",
+    "image": "fallenbagel/jellyseerr:latest",
+    "default_port": 5055,
+    "volumes": {
+      "/path/to/config": "/app/config"
+    },
+    "environment": {
+      "TZ": "America/Los_Angeles"
+    },
+    "network_mode": "bridge",
+    "ports": {
+      "5055": "5055"
+    },
+    "restart_policy": "unless-stopped"
   }
 ]
