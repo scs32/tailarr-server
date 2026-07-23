@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.22.0"
+VERSION = "0.22.1"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -4568,6 +4568,29 @@ def _controller_image():
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
+def _controller_ip():
+    """The controller's own tailnet IPv4, straight from its sidecar.
+
+    Deliberately NOT network_entry(): that helper gates its sidecar
+    query on the pod's .config.json, and BOOTSTRAP-created controllers
+    (i.e. every install) have none — live-caught by the app session
+    2026-07-22 when gateway deploy failed with "controller tailnet IP
+    unknown" on an upgraded install."""
+    ctrl = _controller_name()
+    if not ctrl:
+        return ""
+    r = podman("exec", f"tailscale-{ctrl}", "tailscale", "status",
+               "--json", "--peers=false", timeout=15)
+    if r.returncode != 0:
+        return ""
+    try:
+        ips = ((json.loads(r.stdout) or {}).get("Self") or {}) \
+            .get("TailscaleIPs") or []
+        return next((i for i in ips if "." in i), ips[0] if ips else "")
+    except ValueError:
+        return ""
+
+
 def _ensure_gateway():
     """Deploy the gateway pod once (idempotent; runs during ntfy setup).
     Uses the controller's own image with the selfconfig entrypoint. The
@@ -4583,16 +4606,15 @@ def _ensure_gateway():
     image = _controller_image()
     if not image:
         return "could not determine the controller image"
-    ctrl = _controller_name()
-    entry = network_entry(ctrl, ps_all()) if ctrl else None
-    if not entry or not entry.get("ip"):
+    ip = _controller_ip()
+    if not ip:
         return "controller tailnet IP unknown (sidecar not running?)"
     inst = op_install({
         "name": GATEWAY_POD, "custom": True,
         "image": image,
         "command": "python3 /app/web/selfconfig.py",
         "ports": {GATEWAY_PORT: GATEWAY_PORT},
-        "environment": {"CONTROLLER_URL": f"http://{entry['ip']}:{PORT}",
+        "environment": {"CONTROLLER_URL": f"http://{ip}:{PORT}",
                         "GATEWAY_SECRET": gw["secret"]},
         "volumes": {}, "restart_policy": "unless-stopped",
         "shares": [], "authkey": "",

@@ -2099,6 +2099,34 @@ finally:
     app._arr_api_key = _real_arr_key
     app.network_entry = _real_net_entry
 
+# --- gateway deploy on a bootstrap-created controller (no .config.json) ---
+# Live-caught (app session, 2026-07-22): network_entry gates its sidecar
+# query on .config.json, which bootstrap controllers don't have —
+# _controller_ip must ask the sidecar directly.
+
+
+class CtrlIpFake:
+    def __call__(self, *args, timeout=60):
+        a = list(args)
+        if a[0] == "ps":
+            return _sp.CompletedProcess(
+                a, 0, "tailarr\ntailscale-tailarr\n", "")
+        if a[0] == "exec" and "status" in a:
+            return _sp.CompletedProcess(a, 0, json.dumps(
+                {"Self": {"TailscaleIPs": ["100.64.0.7", "fd7a::7"]}}), "")
+        return _sp.CompletedProcess(a, 1, "", "nope")
+
+
+_real_ip_podman = app.podman
+app.podman = CtrlIpFake()
+try:
+    check(not os.path.exists(os.path.join(pods, "tailarr", ".config.json")),
+          "precondition: the controller pod has no .config.json")
+    check(app._controller_ip() == "100.64.0.7",
+          "controller IP comes straight from its sidecar (config-less OK)")
+finally:
+    app.podman = _real_ip_podman
+
 catsrv.shutdown()
 srv.shutdown()
 print("WEB API TEST PASSED")
