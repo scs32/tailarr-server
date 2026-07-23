@@ -166,6 +166,7 @@ export const api = {
       error: string | null;
       test_error?: string | null;
       funnel_error?: string | null;
+      gateway_error?: string | null;
       status?: NtfyStatus;
     }>("/api/ntfy/setup", {}),
 
