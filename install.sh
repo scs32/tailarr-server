@@ -15,11 +15,18 @@ if [[ "$WORKDIR" == "/" ]]; then
 fi
 REPO_BASE_URL="https://raw.githubusercontent.com/scs32/tailarr-server/main"
 
-# Package installs need sudo only when not already root (containers and
-# minimal VM guests often have no sudo binary at all).
-SUDO="sudo"
-if [[ "$(id -u)" -eq 0 ]]; then
-    SUDO=""
+# The whole install must run as root, not just the package steps: the
+# bootstrap manages the SYSTEM podman API socket (/run/podman, root-owned
+# — sudo-ing apt alone gets you a Permission denied there minutes in),
+# writes /root/start-pods.sh, and installs systemd boot units. We don't
+# sudo-elevate ourselves because the credential env vars would need
+# forwarding through sudo's env filter; a clean re-run as root is simpler.
+if [[ "$(id -u)" -ne 0 ]]; then
+    echo "[ERROR] Tailarr must be installed as root (the controller drives the system podman socket and installs boot units)." >&2
+    echo "        Become root and re-run, e.g.:" >&2
+    echo "          sudo -i" >&2
+    echo "          TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... bash -c \"\$(curl -fsSL $REPO_BASE_URL/install.sh)\"" >&2
+    exit 1
 fi
 
 # --- Check and install podman ---
@@ -28,8 +35,8 @@ if ! command -v podman >/dev/null 2>&1; then
   echo "[WARN] podman not found. Attempting to install..."
 
   if [[ -f /etc/debian_version ]]; then
-    $SUDO apt update
-    $SUDO apt install -y podman
+    apt update
+    apt install -y podman
     echo "[OK] podman successfully installed."
   else
     echo "[ERROR] Unsupported OS for auto-install of podman. Please install it manually."
@@ -45,8 +52,8 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "[WARN] jq not found. Attempting to install..."
 
   if [[ -f /etc/debian_version ]]; then
-    $SUDO apt update
-    $SUDO apt install -y jq
+    apt update
+    apt install -y jq
     echo "[OK] jq successfully installed."
   else
     echo "[ERROR] Unsupported OS for auto-install of jq. Please install it manually."
