@@ -2022,6 +2022,83 @@ finally:
     app.ts_policy_sync = _real_ppl_sync
     app._ntfy_person_sync_bg = _real_sync_bg
 
+# --- media wiring: automated Arr ntfy Connect (phase 2) -------------------
+_arr_dir = os.path.join(pods, "sonarr")
+os.makedirs(_arr_dir, exist_ok=True)
+with open(os.path.join(_arr_dir, ".config.json"), "w") as f:
+    json.dump({"image": "linuxserver/sonarr:latest",
+               "ports": {"8989": "8989"}}, f)
+with open(os.path.join(_arr_dir, "run.sh"), "w") as f:
+    f.write("#!/bin/sh\nexit 0\n")
+
+_arr_calls = []
+_arr_notifications = []
+_ARR_SCHEMA = [{"implementation": "Ntfy", "configContract": "NtfySettings",
+                "fields": [{"name": "serverUrl"}, {"name": "accessToken"},
+                           {"name": "userName"}, {"name": "password"},
+                           {"name": "topics"},
+                           {"name": "priority", "value": 4}]}]
+
+
+def _fake_arr_req(base, key, method, path, body=None):
+    _arr_calls.append((method, path, body))
+    if method == "GET" and path == "/notification/schema":
+        return 200, _ARR_SCHEMA
+    if method == "GET" and path == "/notification":
+        return 200, list(_arr_notifications)
+    if method == "POST" and path == "/notification":
+        _arr_notifications.append({"name": body["name"], "id": 7})
+        return 201, {}
+    if method == "PUT" and path == "/notification/7":
+        return 202, {}
+    return 404, None
+
+
+_real_arr_req = app._arr_req
+_real_arr_key = app._arr_api_key
+_real_net_entry = app.network_entry
+app._arr_req = _fake_arr_req
+app._arr_api_key = lambda pod: "arr-key-123"
+app.network_entry = (lambda name, ps:
+                     {"name": name, "ip": "100.64.0.5",
+                      "ports": {"8989": "8989"}, "state": "running",
+                      "dns_name": "", "https": False, "controller": False,
+                      "system": False, "tailscale": True, "funnel": False,
+                      "network_mode": "bridge", "busy": None})
+try:
+    code, data = post("/api/ntfy/wire/sonarr", {})
+    check(code == 200 and data["ok"] and data["topic"] == "tlr-media-sonarr",
+          "wire configures the Arr's native ntfy connection")
+    _method, _path, body = next(c for c in _arr_calls if c[0] == "POST")
+    fields = {f["name"]: f.get("value") for f in body["fields"]}
+    check(body["name"] == "Tailarr ntfy"
+          and fields["topics"] == ["tlr-media-sonarr"]
+          and fields["accessToken"] == (app.ntfy_client.load_conf()
+                                        ["publisher"]["token"])
+          and body["onDownload"] is True and body["onGrab"] is False,
+          "connection fields map from the Arr's own schema")
+    _arr_status_rows = app.status_ntfy()["arr"]
+    check(any(r["name"] == "sonarr" and r["wired"] == "auto"
+              for r in _arr_status_rows),
+          "wiring state recorded and surfaced")
+    _arr_calls.clear()
+    code, data = post("/api/ntfy/wire/sonarr", {})
+    check(code == 200 and any(c[0] == "PUT" for c in _arr_calls)
+          and not any(c[0] == "POST" for c in _arr_calls),
+          "re-wiring updates the existing connection in place")
+    app._arr_req = (lambda base, key, method, path, body=None:
+                    (200, []))
+    code, data = post("/api/ntfy/wire/sonarr", {})
+    check(code == 400 and data["recipe"]["topic"] == "tlr-media-sonarr",
+          "schema surprises degrade to the manual recipe")
+    code, data = post("/api/ntfy/wire/apitest", {})
+    check(code == 400 and "supported" in data["error"],
+          "non-Arr pods are refused")
+finally:
+    app._arr_req = _real_arr_req
+    app._arr_api_key = _real_arr_key
+    app.network_entry = _real_net_entry
+
 catsrv.shutdown()
 srv.shutdown()
 print("WEB API TEST PASSED")
