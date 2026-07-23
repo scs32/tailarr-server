@@ -65,6 +65,10 @@ through it. It is the install credential. Set it up once:
            // tag:tailarr-ctrl and may only assign tags this tag owns —
            // a tag does not own itself implicitly.
            "tag:tailarr-ctrl": ["autogroup:admin", "tag:tailarr-ctrl"],
+           // tag:tailarr must be declared too: the sovereignty grant
+           // above references it, and Tailscale rejects a policy whose
+           // rules name an undeclared tag ("tag not found").
+           "tag:tailarr": ["autogroup:admin", "tag:tailarr-ctrl"],
            // <<< tailarr-managed:tagowners
        },
 
