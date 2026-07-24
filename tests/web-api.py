@@ -175,8 +175,21 @@ check(os.path.isfile(os.path.join(pods, "apitest", ".deployment.log")),
 
 # --- credential wizard: status + validate/save/fences, no credential yet ---
 code, data = get("/api/info")
-check(code == 200 and data.get("version") and data.get("tsapi") is not None,
-      "GET /api/info carries version + tsapi state")
+check(code == 200 and data.get("version") and data.get("tsapi") is not None
+      and data.get("name") == "",
+      "GET /api/info carries version + tsapi state + (empty) server name")
+
+# Server display name: set, surfaced on /api/info, trimmed/cleared.
+code, data = post("/api/server", {"name": "  Living Room \n"})
+check(code == 200 and data["name"] == "Living Room",
+      "POST /api/server saves the trimmed display name")
+code, data = get("/api/info")
+check(code == 200 and data["name"] == "Living Room",
+      "/api/info reflects the saved server name")
+code, data = post("/api/server", {"name": ""})
+check(code == 200 and data["name"] == ""
+      and get("/api/info")[1]["name"] == "",
+      "clearing the name falls back to empty (host-derived)")
 code, data = get("/api/tsapi")
 check(code == 200 and data["configured"] is False,
       "GET /api/tsapi: not configured on a fresh install")
@@ -2252,6 +2265,31 @@ try:
     app.save_accounts({})
     check("search" not in app.status_users()["services"],
           "search is not offered when the vault has no indexers")
+
+    # UI policy (v0.37.0): the "basic" presentation tier rides the same
+    # /self/services handout. Default = no ui object (full experience).
+    code, data = post("/api/gateway/resolve",
+                      {"ip": "100.64.0.9", "secret": "dummy-test-gwsecret",
+                       "want": "services"})
+    _svcs_before = {s["name"] for s in data["services"]}
+    check("ui" not in data, "no ui object for a non-basic person")
+    r = app.op_person({"do": "basic", "id": _gate_uid, "basic": True})
+    check(r["ok"]
+          and any(p["id"] == _gate_uid and p["basic"] is True
+                  for p in app.status_users()["people"]),
+          "marking a person basic sets the flag (surfaced in /api/users)")
+    code, data = post("/api/gateway/resolve",
+                      {"ip": "100.64.0.9", "secret": "dummy-test-gwsecret",
+                       "want": "services"})
+    check(data.get("ui") == {"basic": True},
+          "basic person's handout carries ui:{basic:true}")
+    check({s["name"] for s in data["services"]} == _svcs_before,
+          "ui is UX-only: it never changes which services are handed out")
+    app.op_person({"do": "basic", "id": _gate_uid, "basic": False})
+    code, data = post("/api/gateway/resolve",
+                      {"ip": "100.64.0.9", "secret": "dummy-test-gwsecret",
+                       "want": "services"})
+    check("ui" not in data, "clearing basic drops the ui object again")
 finally:
     app._arr_api_key = _real_svc_key
     app.network_entry = _real_svc_net
@@ -2645,11 +2683,11 @@ app._stack_wait_arr = lambda pod: ("http://100.64.0.5:8989/api/v3",
                                    "arr-key")
 app.podman = _RestartFake()  # exec mkdir succeeds
 try:
-    _inp = {"media": "/srv/media",
+    _inp = {"media": "/srv/media", "downloader": "nzbget",
             "indexer": {"url": "https://indexer.test/api", "key": "ik"},
             "usenet": _use}
-    detail = app._stack_wire_arr("sonarr", _inp, "100.64.0.9",
-                                 {"user": "u1", "password": "pw1"})
+    detail = app._stack_wire_arr("sonarr", _inp, "nzbget", "100.64.0.9",
+                                 {"user": "u1", "password": "pw1"}, True)
     dl = next(b for m, p, b in _wire_calls
               if m == "POST" and p == "/downloadclient")
     dlf = {f["name"]: f.get("value") for f in dl["fields"]}
@@ -2684,7 +2722,7 @@ app.op_install = lambda req: {"ok": True, "name": req["name"],
 app.op_action = lambda name, action: {"ok": True, "status": "ok",
                                       "error": None}
 app._stack_seed_nzbget = lambda usenet: "news server configured"
-app._stack_wire_arr = lambda pod, i, ip, auth: "wired"
+app._stack_wire_arr = lambda pod, i, dl, ip, conn, add_idx: "wired"
 app.network_entry = (lambda name, ps: {"ip": "100.64.0.9", "ports":
                      {"6789": "6789"}, "dns_name": "", "https": False})
 app._service_auth = lambda pod, kind: {"user": "u", "password": "p"}
@@ -2701,7 +2739,7 @@ try:
     app._save_stack_run({"stack": "usenet-starter", "state": "running",
                          "started": 1, "finished": None, "error": None,
                          "steps": app._stack_steps_for(_spec)})
-    app._stack_wire_arr = (lambda pod, i, ip, auth:
+    app._stack_wire_arr = (lambda pod, i, dl, ip, conn, add_idx:
                            (_ for _ in ()).throw(
                                app._StackAbort("schema probe failed")))
     app._stack_worker("usenet-starter", _inp)
@@ -2717,6 +2755,146 @@ finally:
     app._stack_wire_arr = _real_w_wire
     app.network_entry = _real_w_net
     app._service_auth = _real_w_auth
+
+
+# --- Full Library stack (v0.37.0): downloader choice + Prowlarr hub ------
+# The engine is data-driven: the full-library spec deploys 3 Arrs + a
+# downloader + Prowlarr, and the steps/wiring follow the spec, not code.
+_fl = app.STACKS["full-library"]
+check(app._stack_downloader(_fl, {"downloader": "sabnzbd"}) == "sabnzbd"
+      and app._stack_downloader(_fl, {"downloader": "bogus"}) == "nzbget"
+      and app._stack_downloader(_fl, {}) == "nzbget"
+      and app._stack_downloader(app.STACKS["usenet-starter"],
+                                {"downloader": "sabnzbd"}) == "nzbget",
+      "downloader resolves the wizard pick; single-option stacks ignore it")
+
+_fl_status = next(s for s in app.status_stacks()["stacks"]
+                  if s["key"] == "full-library")
+check(_fl_status["downloaders"] == ["nzbget", "sabnzbd"]
+      and "prowlarr" in _fl_status["services"]
+      and _fl_status["services"][-1] == "nzbget"
+      and "sabnzbd" not in _fl_status["services"],
+      "status offers both downloaders; rail shows one pipeline w/ prowlarr")
+
+# Steps: nzbget path has no prowlarr step; sabnzbd choice swaps the
+# deployed downloader; Prowlarr present means the Arr steps drop 'indexer'.
+_sn = app._stack_steps_for(_fl, "sabnzbd")
+_snk = [s["key"] for s in _sn]
+check("install:sabnzbd" in _snk and "install:nzbget" not in _snk
+      and "install:prowlarr" in _snk and "prowlarr" in _snk
+      and _snk.index("prowlarr") == len(_snk) - 2  # just before notify
+      and all("indexer" not in s["label"] for s in _sn if s["key"]
+              .startswith("wire:")),
+      "full-library steps: chosen downloader, prowlarr hub, no per-Arr indexer")
+
+# SABnzbd download-client fields come from its own schema (apiKey, not
+# user/pass) and the category is still suffix-matched.
+_sab_calls = []
+_SAB_DL_SCHEMA = [{"implementation": "Sabnzbd",
+                   "configContract": "SabnzbdSettings",
+                   "fields": [{"name": "host"}, {"name": "port"},
+                              {"name": "useSsl"}, {"name": "apiKey"},
+                              {"name": "musicCategory"}]}]
+
+
+def _fake_sab_req(base, key, method, path, body=None):
+    _sab_calls.append((method, path, body))
+    if method == "GET" and path == "/downloadclient/schema":
+        return 200, _SAB_DL_SCHEMA
+    if method == "GET" and path in ("/downloadclient", "/rootfolder"):
+        return 200, []
+    if method == "POST":
+        return 201, {}
+    return 404, None
+
+
+_real_sab_req = app._arr_req
+_real_sab_wait = app._stack_wait_arr
+_real_sab_pod = app.podman
+app._arr_req = _fake_sab_req
+app._stack_wait_arr = lambda pod: ("http://100.64.0.7:8686/api/v1", "lk")
+app.podman = _RestartFake()
+try:
+    detail = app._stack_wire_arr(
+        "lidarr", {"media": "/srv/media"}, "sabnzbd", "100.64.0.8",
+        {"api_key": "SABKEY"}, False)
+    _dl = next(b for m, p, b in _sab_calls
+               if m == "POST" and p == "/downloadclient")
+    _dlf = {f["name"]: f.get("value") for f in _dl["fields"]}
+    check(_dl["name"] == "Tailarr sabnzbd" and _dlf["apiKey"] == "SABKEY"
+          and _dlf["musicCategory"] == "music" and _dlf["port"] == 8080,
+          "sabnzbd download client wired w/ apiKey + music category")
+    check(not any(p == "/indexer" for _m, p, _b in _sab_calls),
+          "no per-Arr indexer when add_indexer is False (Prowlarr hub)")
+    check(detail == "folders and download client connected",
+          "wire detail omits indexer under a Prowlarr hub")
+finally:
+    app._arr_req = _real_sab_req
+    app._stack_wait_arr = _real_sab_wait
+    app.podman = _real_sab_pod
+
+# Prowlarr wiring: the indexer is added once, then each Arr is registered
+# as a fullSync Application pointed at Prowlarr's own URL.
+_pl_calls = []
+_PL_IDX_SCHEMA = [{"implementation": "Newznab",
+                   "fields": [{"name": "baseUrl"}, {"name": "apiKey"}]}]
+_PL_APP_SCHEMA = [{"implementation": impl,
+                   "fields": [{"name": "prowlarrUrl"}, {"name": "baseUrl"},
+                              {"name": "apiKey"}]}
+                  for impl in ("Sonarr", "Radarr", "Lidarr")]
+
+
+def _fake_pl_req(base, key, method, path, body=None):
+    _pl_calls.append((method, path, body))
+    if path == "/indexer/schema":
+        return 200, _PL_IDX_SCHEMA
+    if path == "/applications/schema":
+        return 200, _PL_APP_SCHEMA
+    if method == "GET" and path in ("/indexer", "/applications"):
+        return 200, []
+    if method == "POST":
+        return 201, {}
+    return 404, None
+
+
+_real_pl_req = app._arr_req
+_real_pl_wait = app._stack_wait_api
+_real_pl_net = app.network_entry
+_real_pl_key = app._arr_api_key
+app._arr_req = _fake_pl_req
+app._stack_wait_api = lambda pod, ver: ("http://100.64.0.9:9696/api/v1", "pk")
+app.network_entry = (lambda name, ps: {
+    "ip": {"prowlarr": "100.64.0.9", "sonarr": "100.64.0.1",
+           "radarr": "100.64.0.2", "lidarr": "100.64.0.3"}.get(name, "0"),
+    "ports": {"prowlarr": {"9696": "9696"}}.get(
+        name, {"8989": "8989"}), "dns_name": "", "https": False})
+app._arr_api_key = lambda pod: pod + "-key"
+try:
+    detail = app._stack_wire_prowlarr(
+        {"indexer": {"url": "https://indexer.test/api", "key": "ik"}},
+        ["sonarr", "radarr", "lidarr"])
+    _pidx = next(b for m, p, b in _pl_calls
+                 if m == "POST" and p == "/indexer")
+    _pidxf = {f["name"]: f.get("value") for f in _pidx["fields"]}
+    check(_pidxf["baseUrl"] == "https://indexer.test" and _pidxf["apiKey"] == "ik",
+          "prowlarr: indexer added once with the /api suffix stripped")
+    _apps = [b for m, p, b in _pl_calls if m == "POST" and p == "/applications"]
+    check(len(_apps) == 3
+          and {a["name"] for a in _apps} == {"Tailarr sonarr",
+                                             "Tailarr radarr", "Tailarr lidarr"}
+          and all(a["syncLevel"] == "fullSync" for a in _apps),
+          "prowlarr: every Arr registered as a fullSync application")
+    _son = next(a for a in _apps if a["name"] == "Tailarr sonarr")
+    _sonf = {f["name"]: f.get("value") for f in _son["fields"]}
+    check(_sonf["prowlarrUrl"] == "http://100.64.0.9:9696"
+          and _sonf["baseUrl"] == "http://100.64.0.1:8989"
+          and _sonf["apiKey"] == "sonarr-key",
+          "prowlarr application points at Prowlarr's URL + the Arr's key")
+finally:
+    app._arr_req = _real_pl_req
+    app._stack_wait_api = _real_pl_wait
+    app.network_entry = _real_pl_net
+    app._arr_api_key = _real_pl_key
 
 
 # --- push wakes (v0.26.0): gateway registration + fan-out + prune --------
