@@ -586,6 +586,11 @@ a:hover { text-decoration: underline; }
    The dashes flow toward the downloader on hover (the pipeline, animated);
    reduced-motion keeps them still. */
 .stack-rail { display: flex; align-items: center; flex-wrap: wrap; row-gap: var(--sp-2); margin: var(--sp-1) 0; }
+
+/* Invite handout: QR (scan with the app) beside the raw key fallback. */
+.invite-handout { display: flex; gap: var(--sp-4); align-items: flex-start; margin-top: var(--sp-3); flex-wrap: wrap; }
+.invite-qr { background: #fff; padding: var(--sp-2); border-radius: var(--radius-md, 8px); line-height: 0; flex: none; }
+.invite-handout > div:last-child { flex: 1; min-width: 220px; }
 .stack-rail__tile { width: 40px; height: 40px; flex: none; display: grid; place-items: center; background: var(--well); border: 1px solid var(--border-soft); border-radius: 10px; }
 .stack-rail__tile img { width: 24px; height: 24px; display: block; }
 .stack-rail__mono { color: var(--accent); font-family: var(--font-display); font-weight: 600; font-size: 15px; }
