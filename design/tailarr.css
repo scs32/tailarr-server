@@ -581,6 +581,20 @@ a:hover { text-decoration: underline; }
 .stack-card { display: flex; flex-direction: column; gap: var(--sp-3); }
 .stack-card__name { font-weight: 600; letter-spacing: .01em; }
 .stack-card__services { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+
+/* Stack rail: logo tiles joined by a cyan wire — the card's signature.
+   The dashes flow toward the downloader on hover (the pipeline, animated);
+   reduced-motion keeps them still. */
+.stack-rail { display: flex; align-items: center; flex-wrap: wrap; row-gap: var(--sp-2); margin: var(--sp-1) 0; }
+.stack-rail__tile { width: 40px; height: 40px; flex: none; display: grid; place-items: center; background: var(--well); border: 1px solid var(--border-soft); border-radius: 10px; }
+.stack-rail__tile img { width: 24px; height: 24px; display: block; }
+.stack-rail__mono { color: var(--accent); font-family: var(--font-display); font-weight: 600; font-size: 15px; }
+.stack-rail__wire { width: 18px; height: 2px; flex: none; background: repeating-linear-gradient(90deg, var(--accent) 0 3px, transparent 3px 6px); background-size: 6px 2px; opacity: .55; }
+.stack-card:hover .stack-rail__wire { animation: stack-wire-flow .5s linear infinite; opacity: .9; }
+@keyframes stack-wire-flow { to { background-position: 6px 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .stack-card:hover .stack-rail__wire { animation: none; }
+}
 .stack-checks { display: flex; flex-direction: column; gap: var(--sp-2); margin-top: var(--sp-4); }
 .check-row { font-size: var(--fs-sm, 13px); }
 .check-row--ok { color: var(--ok); }
