@@ -16,8 +16,13 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr-serve
 
 The installer prompts for your
 [Tailscale OAuth client](#the-tailscale-credential) (ID + secret) — no
-pasting credentials into the middle of the command. For non-interactive
-runs, pass them via env instead:
+pasting credentials into the middle of the command — and validates
+everything it can *before* touching the system: the credential is
+checked live against the Tailscale API (with its scopes), the tailnet
+policy is checked for the required seed tags, MagicDNS is verified, and
+disk/arch/egress are preflighted. A bad input fails in seconds, on a
+clean host. For non-interactive runs, pass the credential via env
+instead:
 `sudo env TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... bash -c "$(curl ...)"`.
 
 The install must run as root (the controller drives the system podman

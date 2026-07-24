@@ -30,33 +30,41 @@ fail()  { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 # --- credential -------------------------------------------------------------
 # Prompted interactively when possible (the "$(curl ...)" pattern leaves
 # stdin on the terminal); env vars still win when set. Forwarded into the
-# guest install below, so the Linux installer never re-prompts.
+# guest install below, so the Linux installer never re-prompts. Validated
+# LIVE against the Tailscale API before the guest is even created — a bad
+# credential should cost seconds, not a whole guest build.
+prompt_credential() {
+    while [[ -z "${TS_API_CLIENT_ID:-}" ]]; do
+        read -rp "Tailscale OAuth client ID: " TS_API_CLIENT_ID
+        TS_API_CLIENT_ID="${TS_API_CLIENT_ID//[[:space:]]/}"
+        if [[ "$TS_API_CLIENT_ID" == tskey-client-* ]]; then
+            echo "  That looks like the client SECRET — the ID is the short string shown above it."
+            TS_API_CLIENT_ID=""
+        fi
+    done
+    while [[ -z "${TS_API_CLIENT_SECRET:-}" ]]; do
+        read -rsp "Tailscale OAuth client secret (hidden): " TS_API_CLIENT_SECRET
+        echo ""
+        TS_API_CLIENT_SECRET="${TS_API_CLIENT_SECRET//[[:space:]]/}"
+        if [[ -n "$TS_API_CLIENT_SECRET" && "$TS_API_CLIENT_SECRET" != tskey-client-* ]]; then
+            echo "  [WARN] Secrets normally start with 'tskey-client-' — continuing anyway."
+        fi
+    done
+}
+
+TS_OAUTH_TOKEN=""
+mint_oauth_token() {
+    local resp
+    resp="$(curl -s --max-time 20 \
+        -d "client_id=${TS_API_CLIENT_ID}" \
+        -d "client_secret=${TS_API_CLIENT_SECRET}" \
+        "https://api.tailscale.com/api/v2/oauth/token")" || return 2
+    TS_OAUTH_TOKEN="$(printf '%s' "$resp" | sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+    [[ -n "$TS_OAUTH_TOKEN" ]]
+}
+
 if [[ -z "${TS_API_CLIENT_ID:-}" || -z "${TS_API_CLIENT_SECRET:-}" ]]; then
-    if [[ -t 0 ]]; then
-        echo ""
-        echo "Tailarr manages your tailnet through a Tailscale OAuth client."
-        echo "Create it per the README's 'Tailscale credential' section (paste the"
-        echo "tailnet policy, then generate the client at"
-        echo "https://login.tailscale.com/admin/settings/oauth)."
-        echo ""
-        while [[ -z "${TS_API_CLIENT_ID:-}" ]]; do
-            read -rp "Tailscale OAuth client ID: " TS_API_CLIENT_ID
-            TS_API_CLIENT_ID="${TS_API_CLIENT_ID//[[:space:]]/}"
-            if [[ "$TS_API_CLIENT_ID" == tskey-client-* ]]; then
-                echo "  That looks like the client SECRET — the ID is the short string shown above it."
-                TS_API_CLIENT_ID=""
-            fi
-        done
-        while [[ -z "${TS_API_CLIENT_SECRET:-}" ]]; do
-            read -rsp "Tailscale OAuth client secret (hidden): " TS_API_CLIENT_SECRET
-            echo ""
-            TS_API_CLIENT_SECRET="${TS_API_CLIENT_SECRET//[[:space:]]/}"
-            if [[ -n "$TS_API_CLIENT_SECRET" && "$TS_API_CLIENT_SECRET" != tskey-client-* ]]; then
-                echo "  [WARN] Secrets normally start with 'tskey-client-' — continuing anyway."
-            fi
-        done
-        echo ""
-    else
+    if [[ ! -t 0 ]]; then
         echo "[ERROR] A Tailscale OAuth client is required. Run interactively, or pass it via env:" >&2
         echo "" >&2
         echo "  TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... bash -c \"\$(curl -fsSL $REPO_BASE_URL/install-mac.sh)\"" >&2
@@ -66,6 +74,68 @@ if [[ -z "${TS_API_CLIENT_ID:-}" || -z "${TS_API_CLIENT_SECRET:-}" ]]; then
         echo "https://login.tailscale.com/admin/settings/oauth)." >&2
         exit 1
     fi
+    echo ""
+    echo "Tailarr manages your tailnet through a Tailscale OAuth client."
+    echo "Create it per the README's 'Tailscale credential' section (paste the"
+    echo "tailnet policy, then generate the client at"
+    echo "https://login.tailscale.com/admin/settings/oauth)."
+    echo ""
+    prompt_credential
+fi
+
+info "Validating the OAuth client against api.tailscale.com..."
+while true; do
+    if mint_oauth_token; then
+        info "OAuth client accepted."
+        break
+    elif [[ $? -eq 2 ]]; then
+        fail "Could not reach https://api.tailscale.com — check this Mac's network."
+    fi
+    if [[ -t 0 ]]; then
+        echo "[WARN] Tailscale rejected this client ID + secret. Re-check both (a revoked client fails the same way) and try again."
+        TS_API_CLIENT_ID="" TS_API_CLIENT_SECRET=""
+        prompt_credential
+    else
+        fail "Tailscale rejected the OAuth client ID + secret (revoked, mistyped, or from a different tailnet's account)."
+    fi
+done
+
+# Seed-policy + MagicDNS checks (the guest installer re-checks these too,
+# but failing here costs seconds instead of a guest build). Scope probe
+# rides along: a 401/403 on the policy read means a mis-scoped client.
+ACL_TMP="$(mktemp)"
+trap 'rm -f "$ACL_TMP"' EXIT
+ACL_CODE="$(curl -s --max-time 20 -o "$ACL_TMP" -w '%{http_code}' \
+    -H "Authorization: Bearer $TS_OAUTH_TOKEN" \
+    "https://api.tailscale.com/api/v2/tailnet/-/acl" 2>/dev/null || echo 000)"
+case "$ACL_CODE" in
+    200)
+        for tag in "tag:tailarr-ctrl" "tag:tailarr"; do
+            grep -q "\"$tag\"" "$ACL_TMP" \
+                || fail "The tailnet policy does not declare $tag. Paste the README's starting policy (or at minimum its fenced tagOwners block) at https://login.tailscale.com/admin/acls before installing."
+        done
+        info "Tailnet policy declares the Tailarr seed tags."
+        ;;
+    401|403)
+        fail "The OAuth client lacks the 'Policy File' scope (API returned $ACL_CODE). Recreate it with WRITE access to Auth Keys, Devices, and Policy File, tagged tag:tailarr-ctrl."
+        ;;
+    *)
+        echo "[WARN] Could not read the tailnet policy (HTTP $ACL_CODE) — skipping the seed-tag check."
+        ;;
+esac
+DNS_PREFS="$(curl -s --max-time 20 -H "Authorization: Bearer $TS_OAUTH_TOKEN" \
+    "https://api.tailscale.com/api/v2/tailnet/-/dns/preferences" 2>/dev/null || true)"
+if printf '%s' "$DNS_PREFS" | grep -q '"magicDNS"[[:space:]]*:[[:space:]]*false'; then
+    fail "MagicDNS is disabled on this tailnet. Enable it (admin console → DNS → MagicDNS) — Tailarr's hostnames and HTTPS depend on it."
+fi
+echo "[NOTE] One thing this script CANNOT check: 'HTTPS Certificates' must be"
+echo "       enabled in the admin console (DNS tab)."
+
+# --- host preflight ----------------------------------------------------------
+# The guest image + controller + service images land on this Mac's disk.
+DISK_AVAIL_KB="$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')"
+if [[ -n "$DISK_AVAIL_KB" ]] && [[ "$DISK_AVAIL_KB" -lt $(( 10 * 1024 * 1024 )) ]]; then
+    echo "[WARN] Less than 10GB free on this Mac — the guest, controller image, and service images will want more."
 fi
 
 # --- prerequisites ----------------------------------------------------------
