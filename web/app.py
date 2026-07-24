@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.30.0"
+VERSION = "0.31.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -1277,6 +1277,25 @@ def op_user_nick(node_id, nickname):
         nicks.pop(node_id, None)
     save_user_nicks(nicks)
     return {"ok": True, "id": node_id, "nickname": nickname, "error": None}
+
+
+def op_user_revoke(node_id):
+    """Remove a device from the tailnet entirely — the lost/stolen/
+    retired-device action. DELETE drops its enrollment (a stronger,
+    correct-for-a-device-you-no-longer-control step than merely
+    stripping its badges, which would leave it on the tailnet). It can
+    only rejoin with a fresh enrollment key. Also forgets its nickname."""
+    node_id = (node_id or "").strip()
+    if not node_id:
+        return {"ok": False, "id": node_id, "error": "No device given."}
+    code, resp = ts_api("DELETE", f"/device/{node_id}")
+    if code not in (200, 204):
+        return {"ok": False, "id": node_id,
+                "error": f"revoke failed: {resp}"}
+    nicks = load_user_nicks()
+    if nicks.pop(node_id, None) is not None:
+        save_user_nicks(nicks)
+    return {"ok": True, "id": node_id, "error": None}
 
 
 def op_user_access(node_id, service, allow):
@@ -6661,6 +6680,11 @@ def api_post(path, data):
     if m:
         result = op_user_access(m.group(1), (data.get("service") or "").strip(),
                                 bool(data.get("allow")))
+        return (200 if result["ok"] else 400), result
+
+    m = re.fullmatch(r"/api/users/([A-Za-z0-9]+)/revoke", path)
+    if m:
+        result = op_user_revoke(m.group(1))
         return (200 if result["ok"] else 400), result
 
     m = re.fullmatch(r"/api/users/([A-Za-z0-9]+)", path)

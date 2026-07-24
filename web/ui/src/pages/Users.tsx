@@ -20,6 +20,61 @@ function ago(iso: string): string {
   return `${Math.floor(mins / 1440)}d ago`;
 }
 
+// One row of the "Manage devices" list: rename (a local nickname stored
+// on the controller) or revoke (delete the device from the tailnet — the
+// lost/stolen action). Local input state seeds from the saved nickname.
+function ManagedDevice({
+  device,
+  meta,
+  busy,
+  onSave,
+  onRevoke,
+}: {
+  device: UserMachine;
+  meta: string;
+  busy: boolean;
+  onSave: (node: string, nickname: string) => void;
+  onRevoke: (node: string, label: string) => void;
+}) {
+  const [nick, setNick] = useState(device.nickname);
+  const dirty = nick.trim() !== device.nickname;
+  return (
+    <div className="row card" style={{ flexWrap: "wrap", gap: "var(--sp-2)" }}>
+      <div style={{ minWidth: 160 }}>
+        <div className="row__title">{device.hostname}</div>
+        <div className="row__meta">{meta}</div>
+      </div>
+      <div className="spacer" />
+      <input
+        className="input"
+        style={{ width: 150 }}
+        value={nick}
+        placeholder="nickname"
+        aria-label={`Nickname for ${device.hostname}`}
+        disabled={busy}
+        onChange={(e) => setNick(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && dirty) onSave(device.id, nick.trim());
+        }}
+      />
+      <button
+        className="btn btn--ghost btn--sm"
+        disabled={busy || !dirty}
+        onClick={() => onSave(device.id, nick.trim())}
+      >
+        Save name
+      </button>
+      <button
+        className="btn btn--ghost btn--sm"
+        disabled={busy}
+        onClick={() => onRevoke(device.id, device.nickname || device.hostname)}
+      >
+        Revoke
+      </button>
+    </div>
+  );
+}
+
 // Users are PEOPLE: adding one mints an enrollment key carrying their
 // identity tag (tag:tailarr-u-<id>) plus their current badges, so any
 // device that logs in with it belongs to them — and inherits their
@@ -39,6 +94,7 @@ export function Users() {
   const [adoptOpen, setAdoptOpen] = useState(false);
   const [adoptId, setAdoptId] = useState("");
   const [adopting, setAdopting] = useState(false);
+  const [managing, setManaging] = useState(""); // person id whose devices are open
   const { flash, show, clear } = useFlash();
 
   const refresh = useCallback(async () => {
@@ -156,6 +212,37 @@ export function Users() {
     try {
       const r = await api.person({ do: "assign", id: uid, node });
       if (!r.ok) show({ kind: "err", text: r.error ?? "Assign failed." });
+      await refresh();
+    } finally {
+      setBusyKey("");
+    }
+  }
+
+  async function saveNick(node: string, nickname: string) {
+    setBusyKey(`${node}:nick`);
+    try {
+      const r = await api.userNick(node, nickname);
+      if (!r.ok) show({ kind: "err", text: r.error ?? "Couldn't save the name." });
+      else show({ kind: "ok", text: nickname ? "Name saved." : "Name cleared." });
+      await refresh();
+    } finally {
+      setBusyKey("");
+    }
+  }
+
+  async function revokeDevice(node: string, label: string) {
+    if (
+      !window.confirm(
+        `Revoke ${label}? It's removed from the tailnet and loses all access ` +
+          "immediately. It can only rejoin with a new enrollment key.",
+      )
+    )
+      return;
+    setBusyKey(`${node}:revoke`);
+    try {
+      const r = await api.userRevoke(node);
+      if (!r.ok) show({ kind: "err", text: r.error ?? "Couldn't revoke the device." });
+      else show({ kind: "ok", text: `Revoked ${label}.` });
       await refresh();
     } finally {
       setBusyKey("");
@@ -323,6 +410,18 @@ export function Users() {
                     {busyKey === `${p.id}:reissue` && <SpinnerIcon className="btn-icon" />}
                     Reissue key
                   </button>
+                  {p.devices.length > 0 && (
+                    <button
+                      className="btn btn--ghost btn--sm"
+                      disabled={!!busyKey}
+                      title="Rename or revoke this user's devices"
+                      onClick={() =>
+                        setManaging(managing === p.id ? "" : p.id)
+                      }
+                    >
+                      {managing === p.id ? "Done" : "Manage devices"}
+                    </button>
+                  )}
                   <button
                     className="btn btn--ghost btn--sm"
                     disabled={!!busyKey}
@@ -343,16 +442,30 @@ export function Users() {
                     disabled={!!busyKey}
                   />
                 </div>
-                {p.devices.length > 0 && (
-                  <div style={{ marginTop: "var(--sp-3)" }}>
-                    {p.devices.map((u) => (
-                      <div key={u.id} className="row__meta">
-                        <strong>{u.nickname || u.hostname}</strong>
-                        {deviceMeta(u) && ` · ${deviceMeta(u)}`}
-                      </div>
-                    ))}
-                  </div>
-                )}
+                {p.devices.length > 0 &&
+                  (managing === p.id ? (
+                    <div className="row-list" style={{ marginTop: "var(--sp-3)" }}>
+                      {p.devices.map((u) => (
+                        <ManagedDevice
+                          key={u.id}
+                          device={u}
+                          meta={deviceMeta(u)}
+                          busy={!!busyKey}
+                          onSave={saveNick}
+                          onRevoke={revokeDevice}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: "var(--sp-3)" }}>
+                      {p.devices.map((u) => (
+                        <div key={u.id} className="row__meta">
+                          <strong>{u.nickname || u.hostname}</strong>
+                          {deviceMeta(u) && ` · ${deviceMeta(u)}`}
+                        </div>
+                      ))}
+                    </div>
+                  ))}
               </div>
             ))}
           </div>
@@ -401,6 +514,16 @@ export function Users() {
                       busyId={busyKey.startsWith(`${u.id}:`) ? busyKey.slice(u.id.length + 1) : ""}
                       disabled={!!busyKey}
                     />
+                    <button
+                      className="btn btn--ghost btn--sm"
+                      disabled={!!busyKey}
+                      title="Remove this device from the tailnet"
+                      onClick={() =>
+                        revokeDevice(u.id, u.nickname || u.hostname)
+                      }
+                    >
+                      Revoke
+                    </button>
                   </div>
                 ))}
               </div>
