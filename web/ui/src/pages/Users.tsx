@@ -531,10 +531,10 @@ export function Users() {
                     aria-label={`Enrollment QR code for ${key.who}`}
                   />
                 </div>
-                <div className="field__label" style={{ marginTop: "var(--sp-4)" }}>
-                  Prefer not to scan?
-                </div>
-                <div className="preview-row" style={{ marginTop: "var(--sp-2)" }}>
+                <div
+                  className="preview-row"
+                  style={{ marginTop: "var(--sp-4)", justifyContent: "center" }}
+                >
                   <button
                     className="btn btn--sm"
                     title="A link you can text or email — opens the Tailarr app and sets everything up"
@@ -550,21 +550,10 @@ export function Users() {
                   <button
                     className="btn btn--sm"
                     title="The raw enrollment key, for `tailscale up --auth-key=…` on a device without the app"
-                    onClick={() => copyText(key.key, "Enrollment key")}
+                    onClick={() => copyText(key.key, "Auth key")}
                   >
-                    Copy enrollment key
+                    Copy auth key
                   </button>
-                </div>
-                <p className="field__hint" style={{ margin: "var(--sp-3) 0 var(--sp-1)" }}>
-                  No app? Install Tailscale on the device and log in with the
-                  key (<code>tailscale up --auth-key=…</code>):
-                </p>
-                <div
-                  className="log__body"
-                  style={{ userSelect: "all", cursor: "copy" }}
-                  title="Click to select, then copy"
-                >
-                  {key.key}
                 </div>
               </div>
             </div>

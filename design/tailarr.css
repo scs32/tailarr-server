@@ -88,6 +88,17 @@ a:hover { text-decoration: underline; }
    ========================================================= */
 .shell { display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; }
 
+/* On a big-enough screen, pin the sidebar to the viewport and let ONLY the
+   main content scroll — the nav stays put on long pages. Gated so small or
+   short viewports keep normal document scroll (sidesteps mobile 100vh
+   quirks and a cramped, unscrollable sidebar). Modals are position:fixed,
+   so they're unaffected. */
+@media (min-width: 720px) and (min-height: 560px) {
+  .shell { height: 100vh; overflow: hidden; }
+  .sidebar,
+  .main { height: 100vh; overflow-y: auto; }
+}
+
 .sidebar {
   background: linear-gradient(180deg, #16233d 0%, var(--bg) 100%);
   border-right: 1px solid var(--border-soft);
