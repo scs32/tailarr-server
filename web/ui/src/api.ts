@@ -202,18 +202,6 @@ export const api = {
       };
     }>(`/api/ntfy/wire/${pod}`, {}),
 
-  ntfyAlerts: (action: "issue" | "revoke") =>
-    postJSON<{
-      ok: boolean;
-      error: string | null;
-      url?: string;
-      topics?: string[];
-      token?: string;
-      user?: string;
-      password?: string;
-      status?: NtfyStatus;
-    }>("/api/ntfy/alerts", { do: action }),
-
   stats: () => getJSON<StatsSnapshot>("/api/stats"),
 
   users: () => getJSON<UsersStatus>("/api/users"),
