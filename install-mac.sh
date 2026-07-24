@@ -1,9 +1,10 @@
 #!/bin/bash
 # Tailarr installer for macOS + apple/container (Apple silicon, macOS 15+).
 #
-# One command on the Mac does the whole thing:
-#   TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... \
-#     bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr-server/main/install-mac.sh)"
+# One command on the Mac does the whole thing (it prompts for the
+# Tailscale OAuth client; or pass TS_API_CLIENT_ID/TS_API_CLIENT_SECRET
+# via env for non-interactive runs):
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr-server/main/install-mac.sh)"
 #
 # It (1) creates/starts the apple/container guest, (2) runs the normal
 # Linux installer inside it, and (3) turns this Mac into a Tailscale
@@ -27,15 +28,44 @@ info()  { printf '[INFO] %s\n' "$*"; }
 fail()  { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 
 # --- credential -------------------------------------------------------------
+# Prompted interactively when possible (the "$(curl ...)" pattern leaves
+# stdin on the terminal); env vars still win when set. Forwarded into the
+# guest install below, so the Linux installer never re-prompts.
 if [[ -z "${TS_API_CLIENT_ID:-}" || -z "${TS_API_CLIENT_SECRET:-}" ]]; then
-    echo "[ERROR] A Tailscale OAuth client is required:" >&2
-    echo "" >&2
-    echo "  TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... bash -c \"\$(curl -fsSL $REPO_BASE_URL/install-mac.sh)\"" >&2
-    echo "" >&2
-    echo "Create it per the README's 'Tailscale credential' section (paste the" >&2
-    echo "tailnet policy, then generate the client at" >&2
-    echo "https://login.tailscale.com/admin/settings/oauth)." >&2
-    exit 1
+    if [[ -t 0 ]]; then
+        echo ""
+        echo "Tailarr manages your tailnet through a Tailscale OAuth client."
+        echo "Create it per the README's 'Tailscale credential' section (paste the"
+        echo "tailnet policy, then generate the client at"
+        echo "https://login.tailscale.com/admin/settings/oauth)."
+        echo ""
+        while [[ -z "${TS_API_CLIENT_ID:-}" ]]; do
+            read -rp "Tailscale OAuth client ID: " TS_API_CLIENT_ID
+            TS_API_CLIENT_ID="${TS_API_CLIENT_ID//[[:space:]]/}"
+            if [[ "$TS_API_CLIENT_ID" == tskey-client-* ]]; then
+                echo "  That looks like the client SECRET — the ID is the short string shown above it."
+                TS_API_CLIENT_ID=""
+            fi
+        done
+        while [[ -z "${TS_API_CLIENT_SECRET:-}" ]]; do
+            read -rsp "Tailscale OAuth client secret (hidden): " TS_API_CLIENT_SECRET
+            echo ""
+            TS_API_CLIENT_SECRET="${TS_API_CLIENT_SECRET//[[:space:]]/}"
+            if [[ -n "$TS_API_CLIENT_SECRET" && "$TS_API_CLIENT_SECRET" != tskey-client-* ]]; then
+                echo "  [WARN] Secrets normally start with 'tskey-client-' — continuing anyway."
+            fi
+        done
+        echo ""
+    else
+        echo "[ERROR] A Tailscale OAuth client is required. Run interactively, or pass it via env:" >&2
+        echo "" >&2
+        echo "  TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... bash -c \"\$(curl -fsSL $REPO_BASE_URL/install-mac.sh)\"" >&2
+        echo "" >&2
+        echo "Create it per the README's 'Tailscale credential' section (paste the" >&2
+        echo "tailnet policy, then generate the client at" >&2
+        echo "https://login.tailscale.com/admin/settings/oauth)." >&2
+        exit 1
+    fi
 fi
 
 # --- prerequisites ----------------------------------------------------------

@@ -8,15 +8,20 @@ can read.
 
 ## Quick start — web UI (recommended)
 
-On a Debian/Ubuntu host (a VM or container works great), with a
-[Tailscale OAuth client](#the-tailscale-credential):
+On a Debian/Ubuntu host (a VM or container works great):
 
 ```sh
-sudo env TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr-server/main/install.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr-server/main/install.sh)"
 ```
 
+The installer prompts for your
+[Tailscale OAuth client](#the-tailscale-credential) (ID + secret) — no
+pasting credentials into the middle of the command. For non-interactive
+runs, pass them via env instead:
+`sudo env TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... bash -c "$(curl ...)"`.
+
 The install must run as root (the controller drives the system podman
-socket) — drop the `sudo env` if you already are, e.g. inside a
+socket) — drop the `sudo` if you already are, e.g. inside a
 container guest. Don't swap it for `sudo -i`: with `-i`, sudo re-quotes
 the inline script for a login shell and folds it into a comment — the
 command silently does nothing.
@@ -268,8 +273,12 @@ creates the guest, installs Tailarr inside it, and configures the fix
 for apple/container's big catch (see the note below):
 
 ```sh
-TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr-server/main/install-mac.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr-server/main/install-mac.sh)"
 ```
+
+It prompts for your [Tailscale OAuth client](#the-tailscale-credential)
+(or pass `TS_API_CLIENT_ID`/`TS_API_CLIENT_SECRET` via env for
+non-interactive runs).
 
 Prerequisites: `brew install container`, plus the
 [Tailscale app](https://tailscale.com/download) (1.86+) logged in to the
@@ -317,15 +326,15 @@ container run -d --name podhost \
 ```
 
 **3. Install Tailarr inside the guest.** Shell in, add `curl`, then run
-the normal one-liner with your
-[Tailscale OAuth client](#the-tailscale-credential):
+the normal one-liner (it prompts for your
+[Tailscale OAuth client](#the-tailscale-credential)):
 
 ```sh
 container exec -ti podhost bash
 # now inside the guest (exec starts at /, not a login shell):
 cd /root
 apt update && apt install -y curl
-TS_API_CLIENT_ID=... TS_API_CLIENT_SECRET=... bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr-server/main/install.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/scs32/tailarr-server/main/install.sh)"
 ```
 
 The engine scripts land in the directory you run the installer from
