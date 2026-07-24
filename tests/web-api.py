@@ -2193,6 +2193,40 @@ try:
                       {"ip": "100.64.0.9", "secret": "dummy-test-gwsecret"})
     check(code == 200 and "token" in data and "services" not in data,
           "want defaults to notifications (pre-0.23.0 gateway compat)")
+
+    # Search handout: saved newznab indexers, gated on the "search" badge.
+    app.save_accounts({
+        "ix1": {"kind": "newznab", "label": "Geek",
+                "url": "https://api.nzbgeek.info", "key": "gk"},
+        "ix2": {"kind": "newznab", "label": "Finder",
+                "url": "https://nzbfinder.ws", "key": "fk"},
+        "un1": {"kind": "usenet", "label": "Eweka", "host": "news.eweka.nl",
+                "port": 563, "ssl": True, "user": "u", "password": "p"}})
+    code, data = post("/api/gateway/resolve",
+                      {"ip": "100.64.0.9", "secret": "dummy-test-gwsecret",
+                       "want": "services"})
+    check(not any(s["type"] == "indexer"
+                  for s in data.get("services") or []),
+          "no indexers in the handout without the search badge")
+    _ppl = app.load_people()
+    _ppl[_gate_uid]["badges"] = sorted(_ppl[_gate_uid]["badges"] + ["search"])
+    app.save_people(_ppl)
+    code, data = post("/api/gateway/resolve",
+                      {"ip": "100.64.0.9", "secret": "dummy-test-gwsecret",
+                       "want": "services"})
+    _ix = [s for s in data["services"] if s["type"] == "indexer"]
+    check(len(_ix) == 2
+          and {s["name"] for s in _ix} == {"Geek", "Finder"}
+          and next(s for s in _ix if s["name"] == "Geek")["auth"]
+          == {"api_key": "gk"}
+          and next(s for s in _ix if s["name"] == "Geek")["url"]
+          == "https://api.nzbgeek.info",
+          "search badge hands out every saved indexer with host + key")
+    check("search" in app.status_users()["services"],
+          "the search pseudo-service is offered once indexers exist")
+    app.save_accounts({})
+    check("search" not in app.status_users()["services"],
+          "search is not offered when the vault has no indexers")
 finally:
     app._arr_api_key = _real_svc_key
     app.network_entry = _real_svc_net
