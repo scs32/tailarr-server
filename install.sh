@@ -3,16 +3,15 @@ set -euo pipefail
 
 echo "[INFO] Installing and launching Tailarr..."
 
-# Engine scripts land in the current directory — but never scatter them
-# across the filesystem root. `container exec` (no login shell) starts at
-# "/", which is how people run this inside an apple/container guest.
-WORKDIR="$(pwd)"
-if [[ "$WORKDIR" == "/" ]]; then
-    WORKDIR="${HOME:-/root}/tailarr"
-    mkdir -p "$WORKDIR"
-    cd "$WORKDIR"
-    echo "[INFO] Running from /: installing into $WORKDIR instead."
-fi
+# The engine scripts below are only needed to bootstrap the controller — the
+# published image already carries its own copies at /app, and nothing on the
+# host reads them after install. Stage them in a throwaway temp dir (never the
+# invocation directory or $HOME, which is how earlier installs littered
+# scripts across people's home folders) and delete it on exit, so a finished
+# install leaves nothing behind but $PODS_DIR and the boot units.
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/tailarr-install.XXXXXX")"
+trap 'rm -rf "$WORKDIR"' EXIT
+cd "$WORKDIR"
 REPO_BASE_URL="https://raw.githubusercontent.com/scs32/tailarr-server/main"
 
 # The whole install must run as root, not just the package steps: the
@@ -301,7 +300,7 @@ FILES=(
     "bootstrap-tailarr.sh"
 )
 
-echo "[FETCH] Downloading core files into: $WORKDIR"
+echo "[FETCH] Staging install scripts in a temp dir (removed when done)..."
 for file in "${FILES[@]}"; do
     echo "  - Downloading $file..."
     curl -fsSL "$REPO_BASE_URL/$file" -o "$file"
