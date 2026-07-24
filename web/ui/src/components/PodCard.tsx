@@ -65,7 +65,7 @@ export function PodCard({
         {pod.system && (
           <span
             className="chip"
-            title="System pod: Tailarr manages this service itself. It is never shareable and never appears to user devices; manage it from the Notifications page."
+            title="System service: Tailarr manages this itself. It is never shareable and never appears to user devices; manage it from the Notifications page."
           >
             system
           </span>
@@ -73,7 +73,7 @@ export function PodCard({
         {pod.identity === "missing" && (
           <span
             className="chip chip--danger"
-            title="This pod's tailnet node is missing its tag:tailarr-svc tag, so user devices are blocked at the Tailscale packet filter even though the service is healthy. Tailarr retries automatically (reconcile runs on policy syncs and every 15 min); if it persists, check the API credential and policy fences in Settings."
+            title="This service's network identity is missing, so users can't reach it even though it's healthy. Tailarr keeps retrying automatically; if it persists, re-check your Tailscale policy and API credential in Settings."
           >
             identity tag missing
           </span>
@@ -88,7 +88,7 @@ export function PodCard({
           <button
             className={"btn btn--secondary btn--sm" + (busy ? " btn--loading" : "")}
             disabled={locked || pod.controller}
-            title={pod.controller ? "The controller can't stop itself" : undefined}
+            title={pod.controller ? "Tailarr can't stop itself" : undefined}
             onClick={() => run("stop")}
           >
             {busy === "stop" && <SpinnerIcon className="btn-icon" />}
@@ -110,7 +110,7 @@ export function PodCard({
         <button
           className="btn btn--ghost btn--sm"
           disabled={!running}
-          title={running ? "Run a one-shot command inside the container" : "Pod isn't running"}
+          title={running ? "Run a one-shot command in this service" : "Service isn't running"}
           onClick={() => onExec(pod.name)}
         >
           Shell
@@ -120,9 +120,9 @@ export function PodCard({
           disabled={locked || pod.controller || pod.system}
           title={
             pod.controller
-              ? "The controller can't reconfigure itself"
+              ? "Tailarr can't reconfigure itself"
               : pod.system
-                ? "Tailarr manages this pod — configure it from the Notifications page"
+                ? "Tailarr manages this service — configure it from the Notifications page"
                 : "Edit config, then reload or update"
           }
           onClick={() => onEdit(pod.name)}
@@ -133,7 +133,7 @@ export function PodCard({
           <button
             className={"btn btn--secondary btn--sm" + (busy === "update" ? " btn--loading" : "")}
             disabled={locked}
-            title="A newer image is available — pull it and recreate the pod"
+            title="A newer version is available — update to it"
             onClick={() => run("update")}
           >
             {busy === "update" && <SpinnerIcon className="btn-icon" />}

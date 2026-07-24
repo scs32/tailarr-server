@@ -52,12 +52,12 @@ export function Notifications() {
       } else if (r.funnel_error) {
         show({
           kind: "err",
-          text: `Set up, but the public endpoint could not be opened: ${r.funnel_error}. Re-run setup to retry.`,
+          text: `Set up, but phone delivery couldn’t be enabled: ${r.funnel_error}. Re-run setup to retry.`,
         });
       } else if (r.gateway_error) {
         show({
           kind: "err",
-          text: `Set up, but the app self-config gateway failed to deploy: ${r.gateway_error}. Re-run setup to retry.`,
+          text: `Set up, but automatic app setup couldn’t start: ${r.gateway_error}. Re-run setup to retry.`,
         });
       } else {
         show({
@@ -83,8 +83,8 @@ export function Notifications() {
           ? {
               kind: "ok",
               text: enabled
-                ? "Public endpoint is on."
-                : "Public endpoint is off — phones outside the tailnet won't receive.",
+                ? "Phone delivery is on."
+                : "Phone delivery is off — phones away from home won't receive.",
             }
           : { kind: "err", text: r.error ?? "Toggle failed." },
       );
@@ -132,15 +132,14 @@ export function Notifications() {
   const funnelWarning = (
     <>
       <p>
-        The notification endpoint will be published to the{" "}
-        <strong>internet</strong>{" "}
-        over Tailscale Funnel (HTTPS). That is how phones receive
-        notifications when they're away from the tailnet.
+        To deliver to phones away from home, the notification service is
+        published to the <strong>internet</strong> over secure HTTPS. That’s
+        how notifications reach a phone that isn’t on your network.
       </p>
       <p>
-        It stays locked down: access is deny-all, so nothing is readable or
-        writable without a token Tailarr issued. The pod itself remains
-        invisible to your tailnet users.
+        It stays locked down: nothing is readable or writable without a
+        credential Tailarr issued, and the service stays invisible to your
+        users.
       </p>
     </>
   );
@@ -153,19 +152,18 @@ export function Notifications() {
       {status && !status.configured && (
         <div className="card panel">
           <p className="field__hint">
-            Tailarr sends update, health, and lifecycle alerts through a
-            small notification server it runs and manages itself — never
-            listed with your pods, invisible to user devices, locked to
-            deny-all, controlled only from this page.
+            Tailarr sends update, health, and event alerts through a small
+            notification service it runs and manages itself — never listed
+            with your services, invisible to user devices, and controlled
+            only from this page.
             {status.installed
-              ? ` (The service is deployed — ${status.state || "state unknown"} — but not yet configured.)`
+              ? ` (It's deployed — ${status.state || "state unknown"} — but not yet set up.)`
               : ""}
           </p>
           <p className="field__hint">
-            One click {status.installed ? "writes" : "deploys it, writes"}{" "}
-            its server config (authentication on, deny-all access), creates
-            the accounts Tailarr publishes with, and opens the
-            token-protected public endpoint for phone delivery.
+            One click {status.installed ? "sets it up" : "deploys and sets it up"}
+            , creates the accounts it needs, and turns on phone delivery so
+            notifications reach you anywhere.
           </p>
           <button
             className="btn btn--primary"
@@ -200,10 +198,9 @@ export function Notifications() {
                   </span>
                 </div>
                 <div className="row__meta">
-                  Admin alerts publish to the <code>{status.ops_topic}</code>{" "}
-                  topic: pod updates available, controller upgrades and
-                  rollbacks, pods going down or recovering, identity-tag
-                  problems.
+                  You’re alerted about: service updates available, Tailarr
+                  upgrades and rollbacks, a service going down or recovering,
+                  and sign-in problems.
                 </div>
               </div>
               <div>
@@ -214,19 +211,19 @@ export function Notifications() {
                       "chip" + (status.funnel_on ? " chip--installed" : "")
                     }
                   >
-                    {status.funnel_on ? "public endpoint on" : "off"}
+                    {status.funnel_on ? "on" : "off"}
                   </span>
                 </div>
                 <div className="row__meta">
                   {status.funnel_on ? (
                     <>
-                      Token-protected endpoint:{" "}
-                      <code>{status.public_url || "enrolling…"}</code>
+                      Reachable from anywhere:{" "}
+                      <code>{status.public_url || "setting up…"}</code>
                     </>
                   ) : (
                     <>
-                      Phones outside the tailnet can’t receive until the
-                      public endpoint is on.
+                      Phones away from home can’t receive until phone delivery
+                      is on.
                     </>
                   )}
                 </div>
@@ -252,7 +249,7 @@ export function Notifications() {
                     <>
                       Automatic setup for the Tailarr app isn’t available
                       yet — <strong>Re-run setup</strong> to turn it on
-                      (requires controller v0.22.1+).
+                      (requires v0.22.1+).
                     </>
                   )}
                 </div>
@@ -276,7 +273,7 @@ export function Notifications() {
                   onClick={() => setFunnel(false)}
                   disabled={!!busy}
                 >
-                  {busy === "funnel" && <SpinnerIcon />} Turn public endpoint
+                  {busy === "funnel" && <SpinnerIcon />} Turn phone delivery
                   off
                 </button>
               ) : (
@@ -285,15 +282,14 @@ export function Notifications() {
                   onClick={() => setConfirming("funnel")}
                   disabled={!!busy}
                 >
-                  {busy === "funnel" && <SpinnerIcon />} Turn public endpoint
-                  on
+                  {busy === "funnel" && <SpinnerIcon />} Turn phone delivery on
                 </button>
               )}
               <button
                 className="btn"
                 onClick={() => setConfirming("setup")}
                 disabled={!!busy}
-                title="Safe to re-run: converges config, accounts, and the public endpoint without touching existing tokens."
+                title="Safe to re-run: reconciles setup and phone delivery without touching anything already working."
               >
                 Re-run setup
               </button>
@@ -305,10 +301,9 @@ export function Notifications() {
               <div className="section-title">Media events</div>
               <div className="card panel">
                 <p className="field__hint">
-                  Each media app publishes its download/import events to its
-                  own topic — users who hold that service's badge receive
-                  them automatically. Wiring is one click: Tailarr
-                  configures the app's built-in ntfy connection for you.
+                  Each app’s downloads and imports reach the people you’ve
+                  given that service to — automatically. Turning it on is one
+                  click: Tailarr sets up the app’s notifications for you.
                 </p>
                 <div className="row-list">
                   {status.arr.map((a) => (
@@ -318,14 +313,14 @@ export function Notifications() {
                           {a.name}{" "}
                           {a.wired ? (
                             <span className="chip chip--installed">
-                              wired ({a.wired})
+                              {a.wired === "manual" ? "on (manual)" : "on"}
                             </span>
                           ) : (
-                            <span className="chip">not wired</span>
+                            <span className="chip">off</span>
                           )}
                         </div>
                         <div className="row__meta">
-                          topic <code>{a.topic}</code>
+                          Sends downloads and imports
                         </div>
                       </div>
                       <div className="spacer" />
@@ -338,12 +333,12 @@ export function Notifications() {
                         disabled={!!busy}
                         title={
                           a.wired
-                            ? "Safe to re-run: updates the existing connection"
-                            : "Configure this app's ntfy connection automatically"
+                            ? "Safe to re-run: updates the existing setup"
+                            : "Set up this app's notifications automatically"
                         }
                         onClick={() => wire(a.name)}
                       >
-                        {a.wired ? "Re-wire" : "Wire up"}
+                        {a.wired ? "Redo setup" : "Turn on"}
                       </button>
                     </div>
                   ))}
@@ -379,10 +374,10 @@ export function Notifications() {
           title={
             confirming === "setup"
               ? "Set up notifications?"
-              : "Open the public endpoint?"
+              : "Turn on phone delivery?"
           }
           confirmLabel={
-            confirming === "setup" ? "Set up + go public" : "Go public"
+            confirming === "setup" ? "Set up + turn on" : "Turn on"
           }
           busy={!!busy}
           onConfirm={() =>

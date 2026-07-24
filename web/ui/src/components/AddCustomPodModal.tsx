@@ -65,7 +65,7 @@ export function AddCustomPodModal({
     <div className="scrim" onClick={busy ? undefined : onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal__head">
-          <span className="modal__title">Add a custom pod</span>
+          <span className="modal__title">Add a custom service</span>
           <div className="spacer" />
           <button className="btn btn--ghost btn--sm" onClick={onClose}>
             Close
@@ -102,7 +102,7 @@ export function AddCustomPodModal({
             placeholder="e.g. sleep infinity"
           />
         </Field>
-        <Field label="Ports" hint="one host:container per line">
+        <Field label="Ports" hint="one mapping per line (e.g. 8080:8080)">
           <textarea
             className="textarea"
             rows={2}

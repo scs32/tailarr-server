@@ -24,8 +24,8 @@ export function AuthKeyField({
     return (
       <>
         <p className="field__hint" style={{ margin: 0 }}>
-          ✓ An auth key is minted automatically for this pod via the
-          Tailscale API — nothing to paste.
+          ✓ An enrollment key is generated automatically for this service —
+          nothing to paste.
         </p>
         <details style={{ marginTop: "var(--sp-2)" }}>
           <summary className="field__hint" style={{ cursor: "pointer" }}>
@@ -33,7 +33,7 @@ export function AuthKeyField({
           </summary>
           <Field
             label="Tailscale auth key (override)"
-            hint="Leave blank to auto-mint a single-use tag:tailarr key."
+            hint="Leave blank to generate one automatically."
           >
             <input
               className="input"
@@ -51,7 +51,7 @@ export function AuthKeyField({
     <>
       <Field
         label="Tailscale auth key"
-        hint="Fresh single-use, non-ephemeral key. Leave blank only if this pod already has enrolled Tailscale state."
+        hint="Fresh single-use, non-ephemeral key. Leave blank only if this service already has enrolled Tailscale state."
       >
         <input
           className="input"

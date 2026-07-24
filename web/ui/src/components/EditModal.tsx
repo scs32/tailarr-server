@@ -111,8 +111,8 @@ export function EditModal({
           <Alert kind="err">{err}</Alert>
         ) : (
           <>
-            <FormSection title="Image">
-              <Field label="Image">
+            <FormSection title="Version">
+              <Field label="Version">
                 <input
                   className="input"
                   value={image}
@@ -127,7 +127,7 @@ export function EditModal({
                   placeholder="e.g. sleep infinity"
                 />
               </Field>
-              <Field label="Ports" hint="one host:container per line">
+              <Field label="Ports" hint="one mapping per line (e.g. 8080:8080)">
                 <textarea
                   className="textarea"
                   rows={2}
@@ -163,7 +163,7 @@ export function EditModal({
             {controller && (
               <div style={{ marginTop: "var(--sp-4)" }}>
                 <Alert kind="info">
-                  This is the controller pod — it can’t recreate itself.
+                  This is Tailarr itself — it can’t restart itself.
                 </Alert>
               </div>
             )}
@@ -178,7 +178,7 @@ export function EditModal({
               <button
                 className={"btn btn--secondary" + (busy === "reload" ? " btn--loading" : "")}
                 disabled={!!busy || controller || !image.trim()}
-                title="Save edits and recreate the pod with the current image"
+                title="Save edits and restart the service with the current version"
                 onClick={() => apply(false)}
               >
                 {busy === "reload" && <SpinnerIcon className="btn-icon" />}
@@ -187,7 +187,7 @@ export function EditModal({
               <button
                 className={"btn btn--primary" + (busy === "update" ? " btn--loading" : "")}
                 disabled={!!busy || controller || !image.trim()}
-                title="Pull the latest image, then save edits and recreate the pod"
+                title="Fetch the latest version, save edits, and restart the service"
                 onClick={() => apply(true)}
               >
                 {busy === "update" && <SpinnerIcon className="btn-icon" />}

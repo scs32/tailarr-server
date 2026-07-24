@@ -18,8 +18,8 @@ const TAGOWNERS_SNIPPET = `"tagOwners": {
 },`;
 
 const CHECKS: { key: "devices" | "auth_keys" | "policy_file"; label: string; why: string }[] = [
-  { key: "devices", label: "Devices / Core (write)", why: "adopt user machines, flip capability badges, tag sidecars" },
-  { key: "auth_keys", label: "Auth Keys (write)", why: "mint enrollment keys — no more manual key pasting" },
+  { key: "devices", label: "Devices / Core (write)", why: "adopt user machines, manage service access, and set up networking" },
+  { key: "auth_keys", label: "Auth Keys (write)", why: "create enrollment keys — no more manual key pasting" },
   { key: "policy_file", label: "Policy File (write)", why: "keep the tailarr-managed ACL sections in sync" },
 ];
 
@@ -94,9 +94,9 @@ export function TsApiWizard({ onDone }: { onDone?: () => void }) {
     <div className="card" style={{ padding: "var(--sp-5)", marginTop: "var(--sp-4)" }}>
       <FormSection title="1 · Why Tailarr needs an API credential">
         <p className="field__hint" style={{ margin: 0 }}>
-          Tailarr manages your tailnet for you: it mints per-pod and per-user
-          auth keys (no more pasting), flips capability badges, and keeps the
-          three <code>tailarr-managed</code> sections of your ACL policy in
+          Tailarr manages your tailnet for you: it generates per-service and per-user
+          enrollment keys (no more pasting), manages service access, and keeps the
+          Tailarr-managed sections of your network policy in
           sync. All of that goes through the Tailscale API, so the controller
           needs its own credential — stored only on this machine, at{" "}
           <code>Pods/.tsapi.json</code> (mode 0600), never logged.
@@ -109,8 +109,8 @@ export function TsApiWizard({ onDone }: { onDone?: () => void }) {
           <a href={OAUTH_CONSOLE_URL} target="_blank" rel="noreferrer">
             admin console → Settings → OAuth clients
           </a>
-          . Grant exactly these <strong>write</strong> scopes and tag the
-          client <code>tag:tailarr-ctrl</code>:
+          . Grant exactly these <strong>write</strong> scopes and assign it
+          the Tailarr server tag (<code>tag:tailarr-ctrl</code>):
         </p>
         <ul className="field__hint" style={{ margin: "0 0 var(--sp-2)", paddingLeft: "1.2em" }}>
           {CHECKS.map((c) => (
