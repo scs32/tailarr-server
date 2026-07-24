@@ -25,6 +25,7 @@ import type {
   RelayActionResult,
   RelayDevice,
   RelayStatus,
+  SetupStatus,
   Share,
   ShareResult,
   Source,
@@ -403,4 +404,11 @@ export const api = {
 
   sourceDelete: (name: string) =>
     postJSON<ShareResult>("/api/sources", { do: "delete", name }),
+
+  setup: () => getJSON<SetupStatus>("/api/setup"),
+
+  setupAction: (action: "retry" | "skip") =>
+    postJSON<{ ok: boolean; error: string | null }>("/api/setup", {
+      do: action,
+    }),
 };

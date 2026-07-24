@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Sidebar } from "./components/Shell";
+import { SetupOverlay } from "./components/SetupOverlay";
 import { Dashboard } from "./pages/Dashboard";
 import { Catalog } from "./pages/Catalog";
 import { Shares } from "./pages/Shares";
@@ -40,6 +41,7 @@ export function App() {
   return (
     <BrowserRouter>
       <Layout />
+      <SetupOverlay />
     </BrowserRouter>
   );
 }

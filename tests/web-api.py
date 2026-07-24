@@ -2180,7 +2180,7 @@ check(_bn["tailarr-gate"]["system"] is True
       and _bn["apitest"]["system"] is False,
       "/api/pods flags the name-matched gateway as system")
 check(app._display_name("ntfy") == "Notifications"
-      and app._display_name("tailarr-gate") == "Tailarr app setup"
+      and app._display_name("tailarr-gate") == "Configurator"
       and app._display_name("apitest") == "apitest",
       "system pods get function-first display names (Stats)")
 
@@ -2968,6 +2968,108 @@ try:
           "topics outside the person's badges wake nobody")
 finally:
     _urlreq.urlopen = _real_push_urlopen
+
+# ---- First-run setup saga (v0.38.0) -------------------------------------
+_setup_saved = {
+    "deployed": app.deployed_services,
+    "ntfy_load": app.ntfy_client.load_conf,
+    "ensure_gw": app._ensure_gateway,
+    "ntfy_setup": app.op_ntfy_setup,
+    "relay": app.op_relay,
+    "verify": app.relay_verify,
+    "status_relay": app.status_relay,
+    "notify_ops": app.notify_ops,
+    "tsapi_file": app.TSAPI_FILE,
+}
+
+
+def _reset_setup():
+    try:
+        os.remove(app.SETUP_FILE)
+    except OSError:
+        pass
+
+
+# A tsapi path we control (present => a Tailscale credential exists).
+_tsapi_present = os.path.join(pods, ".tsapi-setuptest.json")
+with open(_tsapi_present, "w") as _f:
+    _f.write("{}")
+app.TSAPI_FILE = _tsapi_present
+app.notify_ops = lambda *a, **k: None
+
+# An already-configured install (a real service deployed) => seed done, no run.
+_reset_setup()
+app.deployed_services = lambda: ["sonarr"]
+app.ntfy_client.load_conf = lambda: None
+check(app._setup_should_run() is False,
+      "setup: an existing install with a deployed service is seeded done")
+check((app.load_setup() or {}).get("state") == "done",
+      "setup: existing-install marker is done (no overlay)")
+
+# No credential (broken bootstrap) => seed done, don't loop an overlay forever.
+_reset_setup()
+app.deployed_services = lambda: []
+app.TSAPI_FILE = os.path.join(pods, ".tsapi-missing.json")
+check(app._setup_should_run() is False,
+      "setup: no Tailscale credential seeds done")
+app.TSAPI_FILE = _tsapi_present
+
+# A fresh, empty install => run the saga.
+_reset_setup()
+app.deployed_services = lambda: []
+app.ntfy_client.load_conf = lambda: None
+check(app._setup_should_run() is True,
+      "setup: a fresh empty install runs the saga")
+
+# The worker with the relay not engaged: relay check WARNS (with the host
+# command) but the run still reaches done — warn-not-block.
+_reset_setup()
+app._ensure_gateway = lambda: None
+app.op_ntfy_setup = lambda d: {"ok": True}
+app.op_relay = lambda do, data=None: {"ok": True}
+app.relay_verify = lambda: None
+app.status_relay = lambda: {"verified": {"state": "derp"},
+                            "command": "tailscale set --relay-server-port=40000"}
+app._setup_worker()
+_run = app.load_setup()
+_steps = {s["key"]: s for s in _run["steps"]}
+check(_run["state"] == "done",
+      "setup: relay not engaged doesn't fail the run")
+check(_steps["gateway"]["state"] == "ok"
+      and _steps["notifications"]["state"] == "ok",
+      "setup: gateway + notifications complete")
+check(_steps["relay_check"]["state"] == "warn"
+      and "relay-server-port" in _steps["relay_check"]["detail"],
+      "setup: relay check warns with the host command")
+
+# A working (direct) connection => relay check passes.
+_reset_setup()
+app.status_relay = lambda: {"verified": {"state": "direct"}, "command": ""}
+app._setup_worker()
+_steps = {s["key"]: s for s in app.load_setup()["steps"]}
+check(_steps["relay_check"]["state"] == "ok",
+      "setup: a working (direct) relay check passes")
+
+# A fatal step failing => run failed; skip dismisses it.
+_reset_setup()
+app.op_ntfy_setup = lambda d: {"ok": False, "error": "funnel unavailable"}
+app._setup_worker()
+check(app.load_setup()["state"] == "failed",
+      "setup: a failed notifications step fails the run")
+check(app.op_setup({"do": "skip"})["ok"] is True
+      and app.load_setup()["state"] == "done",
+      "setup: skip dismisses a failed run")
+
+app.deployed_services = _setup_saved["deployed"]
+app.ntfy_client.load_conf = _setup_saved["ntfy_load"]
+app._ensure_gateway = _setup_saved["ensure_gw"]
+app.op_ntfy_setup = _setup_saved["ntfy_setup"]
+app.op_relay = _setup_saved["relay"]
+app.relay_verify = _setup_saved["verify"]
+app.status_relay = _setup_saved["status_relay"]
+app.notify_ops = _setup_saved["notify_ops"]
+app.TSAPI_FILE = _setup_saved["tsapi_file"]
+_reset_setup()
 
 catsrv.shutdown()
 srv.shutdown()
