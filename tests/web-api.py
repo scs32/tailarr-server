@@ -1641,30 +1641,35 @@ try:
           and app.pod_config("ntfy").get("funnel") == "yes",
           "Notifications page owns the funnel toggle (back on)")
 
-    # "Alerts on your phone": issue / re-show / revoke
+    # "Alerts on your phone" card removed in v0.27.0: the endpoint is gone
+    # and the converge pass retires the legacy account on upgraded installs.
     code, data = post("/api/ntfy/alerts", {"do": "issue"})
-    check(code == 200 and data["ok"] and data["token"].startswith("tk_")
-          and data["topics"] == ["tlr-ops"]
-          and data["status"]["alerts_issued"] is True,
-          "alerts issue mints a read credential and flags status")
-    check(data["user"] == "tailarr-alerts" and len(data["password"]) >= 20,
-          "issue returns user+password too (iOS ntfy app lacks token auth)")
-    check("tailarr-alerts" in nfake.users
-          and any("access" in c and "tailarr-alerts" in c and "read" in c
-                  for c in nfake.calls),
-          "alerts account created with read-only access")
-    tok1 = data["token"]
-    nfake.calls = []
-    code, data = post("/api/ntfy/alerts", {"do": "issue"})
-    check(code == 200 and data["token"] == tok1
-          and not any("token" in c for c in nfake.calls),
-          "re-issue re-shows the SAME token (idempotent)")
-    code, data = post("/api/ntfy/alerts", {"do": "revoke"})
-    check(code == 200 and data["ok"]
-          and data["status"]["alerts_issued"] is False
-          and any("del" in c and "tailarr-alerts" in c for c in nfake.calls)
-          and "alerts" not in (app.ntfy_client.load_conf() or {}),
-          "revoke deletes the ntfy account and clears the registry")
+    check(code == 404, "the removed /api/ntfy/alerts endpoint 404s")
+    conf = app.ntfy_client.load_conf()
+    conf["alerts"] = {"user": "tailarr-alerts", "password": "x", "token": "tk_x"}
+    app.ntfy_client.save_conf(conf)
+    nfake.users.add("tailarr-alerts")
+    # Pin the gateway half of converge to its no-op path: this test only
+    # exercises the retirement (the gateway converge has its own suite).
+    _real_alrt_img = app._controller_image
+    app._controller_image = \
+        lambda: (app.pod_config("tailarr-gate") or {}).get("image") or ""
+    _real_alrt_gw = app._ensure_gateway
+    app._ensure_gateway = lambda: "stubbed"
+    try:
+        nfake.calls = []
+        app._converge_notifications()
+        check(any("del" in c and "tailarr-alerts" in c for c in nfake.calls)
+              and "alerts" not in (app.ntfy_client.load_conf() or {}),
+              "converge retires the legacy alerts account and registry entry")
+        nfake.calls = []
+        app._converge_notifications()
+        check(not any("del" in c and "tailarr-alerts" in c
+                      for c in nfake.calls),
+              "retirement runs once — no delete on the next converge")
+    finally:
+        app._controller_image = _real_alrt_img
+        app._ensure_gateway = _real_alrt_gw
 finally:
     app.podman = _real_ntfy_podman
 

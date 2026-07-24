@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.26.0"
+VERSION = "0.27.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -3645,9 +3645,27 @@ def _converge_notifications():
     stale copy wouldn't know new /self/* routes, so on image mismatch
     the saved config is repointed and the pod re-rendered in place
     (never remove+reinstall: that wipes its Tailscale identity and
-    invites a hostname collision)."""
-    if not ntfy_client.load_conf():
+    invites a hostname collision).
+
+    Also retires the legacy "Alerts on your phone" credential (card
+    removed in v0.27.0 — the Tailarr app gets alerts natively via the
+    gateway, and person handouts cover the official ntfy app): the
+    read-only tailarr-alerts account would otherwise linger with no UI
+    left to revoke it. Kept on failure so a later start retries."""
+    conf = ntfy_client.load_conf()
+    if not conf:
         return
+    if conf.get("alerts"):
+        entry = _discover_ntfy(fresh=True)
+        if entry:
+            r = _ntfy_cli(entry["name"], "user", "del",
+                          ntfy_client.ALERTS_USER)
+            out = r.stdout + r.stderr
+            if r.returncode == 0 or "exist" in out or "found" in out:
+                conf.pop("alerts", None)
+                ntfy_client.save_conf(conf)
+                print("alerts converge: retired the legacy phone "
+                      "credential (superseded by the Tailarr app)")
     if GATEWAY_POD not in deployed_services():
         err = _ensure_gateway()
         if err:
@@ -4337,7 +4355,6 @@ def status_ntfy():
         "public_url": (f"https://{entry['dns_name']}"
                        if entry and entry.get("dns_name") else ""),
         "ops_topic": ntfy_client.OPS_TOPIC,
-        "alerts_issued": bool((conf or {}).get("alerts")),
         "gateway": GATEWAY_POD in deployed_services(),
         "arr": _arr_status(),
         "publish_error": state.get("last_publish_error") or None,
@@ -4502,84 +4519,6 @@ def op_ntfy_funnel(data):
         return {"ok": False, "error": "No ntfy pod found."}
     r = op_network_set(entry["name"], {"funnel": bool(data.get("enabled"))})
     return {"ok": r["ok"], "error": r.get("error"),
-            "status": status_ntfy()}
-
-
-def op_ntfy_alerts(data):
-    """Issue/revoke the admin phone credential ("Alerts on your phone").
-
-    A dedicated read-only ntfy account (tailarr-alerts, read on tlr-*)
-    whose token IS the handout — deliberately returned by the API,
-    unlike every other stored secret, because its whole job is to be
-    entered into the ntfy app (or, later, the Tailarr app) on the
-    admin's phone. Issue is idempotent: it converges the account +
-    grant and re-returns the saved token, so "Show details" after a
-    page reload is just another issue call. Revoke deletes the ntfy
-    account — its tokens and grants die with it."""
-    do = (data.get("do") or "issue").strip()
-    conf = ntfy_client.load_conf()
-    if not conf:
-        return {"ok": False, "error": "ntfy is not configured — run setup."}
-    entry = _discover_ntfy(fresh=True)
-    if not entry:
-        return {"ok": False, "error": "No ntfy pod found."}
-    pod = entry["name"]
-    user = ntfy_client.ALERTS_USER
-    if do == "revoke":
-        r = _ntfy_cli(pod, "user", "del", user)
-        out = r.stdout + r.stderr
-        if r.returncode != 0 and "exist" not in out and "found" not in out:
-            return {"ok": False, "error": "could not delete the alerts "
-                                          "account: " + out.strip()[-200:]}
-        conf.pop("alerts", None)
-        ntfy_client.save_conf(conf)
-        return {"ok": True, "error": None, "status": status_ntfy()}
-    if do != "issue":
-        return {"ok": False, "error": f"unknown do '{do}'"}
-    saved = conf.get("alerts") or {}
-    listed = _ntfy_cli(pod, "user", "list")
-    if listed.returncode != 0:
-        return {"ok": False, "error": ("ntfy CLI unavailable: "
-                + (listed.stdout + listed.stderr).strip()[-200:])}
-    exists = f"user {user}" in (listed.stdout + listed.stderr)
-    password = (saved.get("password") if exists else None) \
-        or secrets.token_urlsafe(24)
-    if not exists:
-        r = _ntfy_cli(pod, "user", "add", "--role=user", user,
-                      env={"NTFY_PASSWORD": password})
-        if r.returncode != 0 and "exists" not in (r.stdout + r.stderr):
-            return {"ok": False, "error": ("could not create the alerts "
-                    "account: " + (r.stdout + r.stderr).strip()[-200:])}
-    elif not saved.get("password"):
-        # Account exists but the registry lost its password (restored
-        # backup): reset it so what the card displays is always true.
-        r = _ntfy_cli(pod, "user", "change-pass", user,
-                      env={"NTFY_PASSWORD": password})
-        if r.returncode != 0:
-            return {"ok": False, "error": ("could not reset the alerts "
-                    "password: " + (r.stdout + r.stderr).strip()[-200:])}
-    r = _ntfy_cli(pod, "access", user, "tlr-*", "read")
-    if r.returncode != 0:
-        return {"ok": False, "error": ("could not grant read access: "
-                + (r.stdout + r.stderr).strip()[-200:])}
-    token = saved.get("token", "") if exists else ""
-    if not token:
-        r = _ntfy_cli(pod, "token", "add", user)
-        m = re.search(r"tk_[A-Za-z0-9_]+", r.stdout + r.stderr)
-        if r.returncode != 0 or not m:
-            return {"ok": False, "error": ("could not mint the alerts "
-                    "token: " + (r.stdout + r.stderr).strip()[-200:])}
-        token = m.group(0)
-    conf["alerts"] = {"user": user, "password": password, "token": token}
-    ntfy_client.save_conf(conf)
-    url = conf.get("public_url") or (f"https://{entry['dns_name']}"
-                                     if entry.get("dns_name") else "")
-    # user+password ride along because the iOS ntfy app only supports
-    # basic auth for protected servers (tokens are Android/web/CLI);
-    # both credentials are the same read-only account.
-    return {"ok": True, "error": None, "url": url,
-            "topics": [ntfy_client.OPS_TOPIC], "token": token,
-            "user": user, "password": password,
             "status": status_ntfy()}
 
 
@@ -6556,10 +6495,6 @@ def api_post(path, data):
 
     if path == "/api/ntfy/funnel":
         result = op_ntfy_funnel(data)
-        return (200 if result["ok"] else 400), result
-
-    if path == "/api/ntfy/alerts":
-        result = op_ntfy_alerts(data)
         return (200 if result["ok"] else 400), result
 
     if path == "/api/gateway/resolve":

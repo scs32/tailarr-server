@@ -18,7 +18,7 @@ export function Notifications() {
   const [status, setStatus] = useState<NtfyStatus | null>(null);
   const { flash, show, clear } = useFlash();
   const [busy, setBusy] = useState<
-    "" | "setup" | "test" | "funnel" | "alerts" | "wire"
+    "" | "setup" | "test" | "funnel" | "wire"
   >("");
   const [recipe, setRecipe] = useState<{
     pod: string;
@@ -28,13 +28,6 @@ export function Notifications() {
     topic: string;
   } | null>(null);
   const [confirming, setConfirming] = useState<"" | "setup" | "funnel">("");
-  const [handout, setHandout] = useState<{
-    url: string;
-    topics: string[];
-    token: string;
-    user: string;
-    password: string;
-  } | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -116,44 +109,6 @@ export function Notifications() {
         show({ kind: "err", text: r.error ?? "Wiring failed." });
         if (r.recipe) setRecipe({ pod, ...r.recipe });
       }
-      await refresh();
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function issueAlerts() {
-    setBusy("alerts");
-    try {
-      const r = await api.ntfyAlerts("issue");
-      if (r.ok && r.url !== undefined) {
-        setHandout({
-          url: r.url,
-          topics: r.topics ?? [],
-          token: r.token ?? "",
-          user: r.user ?? "",
-          password: r.password ?? "",
-        });
-      } else {
-        show({ kind: "err", text: r.error ?? "Could not issue the credential." });
-      }
-      await refresh();
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function revokeAlerts() {
-    if (!window.confirm("Revoke phone access? The token stops working immediately; issue a new one any time.")) return;
-    setBusy("alerts");
-    try {
-      const r = await api.ntfyAlerts("revoke");
-      show(
-        r.ok
-          ? { kind: "ok", text: "Phone access revoked." }
-          : { kind: "err", text: r.error ?? "Revoke failed." },
-      );
-      setHandout(null);
       await refresh();
     } finally {
       setBusy("");
@@ -414,100 +369,6 @@ export function Notifications() {
               </div>
             </>
           )}
-
-          <div className="section-title">Alerts on your phone</div>
-          <div className="card panel">
-            <p className="field__hint">
-              Subscribe your own phone with the free{" "}
-              <a href="https://ntfy.sh/docs/subscribe/phone/" target="_blank" rel="noreferrer">
-                ntfy app
-              </a>{" "}
-              using a read-only credential. It can read Tailarr topics and
-              nothing else; revoke it here any time. The same details will
-              configure the Tailarr app's notifications module when that
-              ships.
-            </p>
-            {!status.funnel_on && (
-              <Alert kind="err">
-                The public endpoint is off — your phone can only subscribe
-                while it can reach the tailnet. Turn the endpoint on above
-                for delivery anywhere.
-              </Alert>
-            )}
-            {handout ? (
-              <>
-                <div className="row-list" style={{ marginTop: "var(--sp-3)" }}>
-                  <div>
-                    <div className="row__title">Server</div>
-                    <div className="row__meta">
-                      <code>{handout.url || "(sidecar still enrolling — re-show in a moment)"}</code>
-                    </div>
-                  </div>
-                  <div>
-                    <div className="row__title">Topic</div>
-                    <div className="row__meta">
-                      <code>{handout.topics.join(", ")}</code>
-                    </div>
-                  </div>
-                  <div>
-                    <div className="row__title">Username / password</div>
-                    <div className="row__meta">
-                      <code>{handout.user}</code> / <code>{handout.password}</code>
-                      {" "}— what the iOS ntfy app asks for when subscribing
-                      to a protected topic.
-                    </div>
-                  </div>
-                  <div>
-                    <div className="row__title">Access token</div>
-                    <div className="row__meta">
-                      <code>{handout.token}</code> — same account, for the
-                      Android/web ntfy apps and the Tailarr app.
-                    </div>
-                  </div>
-                  <div>
-                    <div className="row__title">Tailarr app config</div>
-                    <div className="row__meta">
-                      <code>
-                        {JSON.stringify({
-                          url: handout.url,
-                          token: handout.token,
-                          topics: handout.topics,
-                        })}
-                      </code>
-                    </div>
-                  </div>
-                </div>
-                <p className="field__hint" style={{ marginTop: "var(--sp-3)" }}>
-                  In the ntfy app: add a subscription → “Use another server”
-                  with the server and topic above. iOS prompts for the
-                  username and password; on Android/web you can instead add
-                  the access token under Settings → Manage users.
-                </p>
-              </>
-            ) : null}
-            <div style={{ marginTop: "var(--sp-4)" }}>
-              {!handout && (
-                <button
-                  className="btn btn--primary"
-                  onClick={issueAlerts}
-                  disabled={!!busy}
-                >
-                  {busy === "alerts" && <SpinnerIcon />}
-                  {status.alerts_issued ? "Show phone access details" : "Issue phone access"}
-                </button>
-              )}
-              {(status.alerts_issued || handout) && (
-                <button
-                  className="btn"
-                  onClick={revokeAlerts}
-                  disabled={!!busy}
-                  style={{ marginLeft: handout ? 0 : "var(--sp-3)" }}
-                >
-                  Revoke phone access
-                </button>
-              )}
-            </div>
-          </div>
         </>
       )}
 

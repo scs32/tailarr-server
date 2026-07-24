@@ -135,7 +135,6 @@ export interface NtfyStatus {
   funnel_on: boolean; // public HTTPS for phones outside the tailnet
   public_url: string;
   ops_topic: string;
-  alerts_issued: boolean; // an admin phone credential exists
   gateway: boolean; // self-config gateway pod deployed (Tailarr app)
   // Media apps and their wiring state ("auto" | "manual" | "").
   arr: { name: string; kind: string; topic: string; wired: string }[];
