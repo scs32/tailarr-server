@@ -51,19 +51,20 @@ class Handler(BaseHTTPRequestHandler):
     # pod onto the new controller image at upgrade).
     ROUTES = {"/self/notifications": "notifications",
               "/self/services": "services"}
+    # POST routes carry a small body forward (allow-listed fields only —
+    # the gateway never blindly proxies caller JSON to the controller).
+    POST_ROUTES = {"/self/push-token": ("push-token",
+                                        ("token", "sandbox", "do"))}
 
-    def do_GET(self):
-        want = self.ROUTES.get(self.path)
-        if not want:
-            return self._send({"ok": False, "error": "not found"}, 404)
+    def _forward(self, want, extra=None):
         if not (CONTROLLER_URL and GATEWAY_SECRET):
             return self._send(
                 {"ok": False, "error": "gateway not configured"}, 500)
+        payload = {"ip": self.client_address[0], "want": want,
+                   "secret": GATEWAY_SECRET, **(extra or {})}
         req = urllib.request.Request(
             CONTROLLER_URL + "/api/gateway/resolve",
-            data=json.dumps({"ip": self.client_address[0],
-                             "want": want,
-                             "secret": GATEWAY_SECRET}).encode(),
+            data=json.dumps(payload).encode(),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
@@ -80,6 +81,27 @@ class Handler(BaseHTTPRequestHandler):
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             return self._send(
                 {"ok": False, "error": f"controller unreachable: {e}"}, 502)
+
+    def do_GET(self):
+        want = self.ROUTES.get(self.path)
+        if not want:
+            return self._send({"ok": False, "error": "not found"}, 404)
+        return self._forward(want)
+
+    def do_POST(self):
+        route = self.POST_ROUTES.get(self.path)
+        if not route:
+            return self._send({"ok": False, "error": "not found"}, 404)
+        want, allowed = route
+        try:
+            n = min(int(self.headers.get("Content-Length") or 0), 4096)
+            body = json.loads(self.rfile.read(n) or b"{}")
+            if not isinstance(body, dict):
+                raise ValueError
+        except (ValueError, OSError):
+            return self._send({"ok": False, "error": "bad json"}, 400)
+        return self._forward(want,
+                             {k: body.get(k) for k in allowed if k in body})
 
     def log_message(self, fmt, *args):
         print("%s - %s" % (self.address_string(), fmt % args))

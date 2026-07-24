@@ -2565,6 +2565,79 @@ finally:
     app.network_entry = _real_w_net
     app._service_auth = _real_w_auth
 
+
+# --- push wakes (v0.26.0): gateway registration + fan-out + prune --------
+import io as _io  # noqa: E402
+import urllib.error as _urlerr  # noqa: E402
+
+app.podman = gfake  # whois resolves to the person again
+try:
+    code, data = post("/api/gateway/resolve",
+                      {"ip": "100.64.0.9", "secret": "dummy-test-gwsecret",
+                       "want": "push-token", "token": "AB" * 32,
+                       "sandbox": True})
+    check(code == 200 and data["ok"] and data["registered"]
+          and data["count"] == 1,
+          "push token registers via the whois'd gateway route")
+    code, data = post("/api/gateway/resolve",
+                      {"ip": "100.64.0.9", "secret": "dummy-test-gwsecret",
+                       "want": "push-token", "token": "not-a-token"})
+    check(code == 400, "malformed device token refused")
+finally:
+    app.podman = _real_gate_podman
+
+r = app.op_person_push(_gate_uid, {"token": "AB" * 32})
+check(r["ok"] and r["count"] == 1,
+      "re-registering the same token is an idempotent refresh")
+for i in range(12):
+    app.op_person_push(_gate_uid, {"token": f"{i:02x}" * 32})
+check(len(app.load_push()["tokens"][_gate_uid]) == 10,
+      "per-person token cap holds at 10")
+r = app.op_person_push(_gate_uid, {"do": "unregister",
+                                   "token": "0b" * 32})
+check(r["ok"] and not r["registered"] and r["count"] == 9,
+      "unregister removes exactly that token")
+
+# Fan-out: the person's badges (apitest/sonarr/server from earlier
+# suites) map topics -> their tokens; a relay "gone" answer prunes.
+app.save_push({"tokens": {_gate_uid: [
+    {"token": "aa" * 32, "sandbox": False},
+    {"token": "bb" * 32, "sandbox": False}]}})
+app._push_recent.clear()
+_woken = []
+
+
+def _fake_relay_urlopen(req, timeout=10):
+    body = json.loads(req.data)
+    _woken.append(body["token"])
+    if body["token"].startswith("bb"):
+        raise _urlerr.HTTPError(req.full_url, 400, "bad", {},
+                                _io.BytesIO(b'{"ok":false,"gone":true,'
+                                            b'"error":"BadDeviceToken"}'))
+    return _CapsResp('{"ok":true}')
+
+
+_real_push_urlopen = _urlreq.urlopen
+_urlreq.urlopen = _fake_relay_urlopen
+try:
+    app._push_handle_topic("tlr-media-sonarr")
+    check(sorted(_woken) == ["aa" * 32, "bb" * 32],
+          "a topic message wakes every device of every reader")
+    left = [t["token"] for t in app.load_push()["tokens"][_gate_uid]]
+    check(left == ["aa" * 32],
+          "relay 'gone' prunes the dead token, keeps the live one")
+    _woken.clear()
+    app._push_handle_topic("tlr-media-sonarr")
+    check(_woken == [],
+          "burst coalescing: no re-wake within the window")
+    _woken.clear()
+    app._push_recent.clear()
+    app._push_handle_topic("tlr-media-radarr")
+    check(_woken == [],
+          "topics outside the person's badges wake nobody")
+finally:
+    _urlreq.urlopen = _real_push_urlopen
+
 catsrv.shutdown()
 srv.shutdown()
 print("WEB API TEST PASSED")

@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.25.1"
+VERSION = "0.26.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -4728,6 +4728,8 @@ def op_gateway_resolve(data):
     want = (data.get("want") or "notifications").strip()
     if want == "services":
         return op_person_services(uid)
+    if want == "push-token":
+        return op_person_push(uid, data)
     if want != "notifications":
         return {"ok": False, "error": "unknown request"}
     return op_person_notify(uid)
@@ -5599,6 +5601,177 @@ def op_stack_install(data):
     threading.Thread(target=_stack_worker, args=(key, inputs),
                      daemon=True).start()
     return {"ok": True, "error": None}
+
+
+# =========================================================================
+# Push wakes (v0.26.0) — real background push for the Tailarr app via the
+# vendor relay (push.tailarr.com, repo scs32/tailarr-relay). The relay is
+# content-free: the controller tells it only "wake device token X", the
+# device's Notification Service Extension then fetches the composed
+# message from THIS server over the tailnet — no payloads ever transit
+# third-party infrastructure. Registration is whois-authenticated via the
+# self-config gateway (POST /self/push-token); registering a token IS the
+# consent for wakes. Fan-out mirrors the ntfy stream: every message on a
+# topic wakes each reader's registered devices, so anything that already
+# notifies (Arr media events, ops alerts) gains push with no new hooks.
+# =========================================================================
+PUSH_FILE = os.path.join(PODS_DIR, ".push.json")
+DEFAULT_PUSH_RELAY = "https://push.tailarr.com"
+PUSH_TOKEN_RE = re.compile(r"^[0-9a-fA-F]{32,200}$")
+_push_lock = threading.Lock()
+_push_recent = {}  # token -> last wake unix ts (burst coalescing)
+
+
+def load_push():
+    try:
+        with open(PUSH_FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_push(data):
+    _write_secret(PUSH_FILE, json.dumps(data, indent=2))
+
+
+def op_person_push(uid, data):
+    """Register/unregister one device's raw APNs token for a person —
+    the gateway forwards POST /self/push-token here after whois. Capped
+    per person; same-token re-register is an idempotent refresh."""
+    token = str(data.get("token") or "").strip().lower()
+    if not PUSH_TOKEN_RE.match(token):
+        return {"ok": False, "error": "bad device token"}
+    do = (data.get("do") or "register").strip()
+    if do not in ("register", "unregister"):
+        return {"ok": False, "error": "unknown action"}
+    with _push_lock:
+        reg = load_push()
+        tokens = reg.setdefault("tokens", {})
+        toks = [t for t in (tokens.get(uid) or [])
+                if t.get("token") != token]
+        if do == "register":
+            toks.append({"token": token,
+                         "sandbox": bool(data.get("sandbox")),
+                         "added": int(time.time())})
+            toks = toks[-10:]
+        if toks:
+            tokens[uid] = toks
+        else:
+            tokens.pop(uid, None)
+        save_push(reg)
+    return {"ok": True, "error": None,
+            "registered": do == "register", "count": len(toks)}
+
+
+def _push_relay_url():
+    return (load_push().get("relay") or DEFAULT_PUSH_RELAY).rstrip("/")
+
+
+def _push_wake_token(entry):
+    """One content-free wake via the public relay. Returns None, "gone"
+    (the device unregistered — prune it), or an error string."""
+    body = json.dumps({"token": entry["token"],
+                       "sandbox": bool(entry.get("sandbox")),
+                       "kind": "alert"}).encode()
+    req = urllib.request.Request(
+        _push_relay_url() + "/wake", data=body,
+        headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=10):
+            return None
+    except urllib.error.HTTPError as e:
+        try:
+            if (json.load(e) or {}).get("gone"):
+                return "gone"
+        except ValueError:
+            pass
+        return f"relay HTTP {e.code}"
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        return f"relay unreachable: {e}"
+
+
+def _push_handle_topic(topic):
+    """Wake every registered device of every person whose badges read
+    this topic. Bursts coalesce (one wake per token per 10s — the app
+    fetches everything new anyway); dead tokens are pruned."""
+    reg = load_push()
+    tokens = reg.get("tokens") or {}
+    if not tokens:
+        return
+    people = load_people()
+    now = time.time()
+    gone = set()
+    for uid, person in people.items():
+        if topic not in _ntfy_person_topics(person):
+            continue
+        for entry in tokens.get(uid) or []:
+            tok = entry["token"]
+            if now - _push_recent.get(tok, 0) < 10:
+                continue
+            _push_recent[tok] = now
+            err = _push_wake_token(entry)
+            if err == "gone":
+                gone.add(tok)
+            elif err:
+                print(f"push wake: {err}")
+    if gone:
+        with _push_lock:
+            reg = load_push()
+            toks = reg.get("tokens") or {}
+            for uid in list(toks):
+                toks[uid] = [t for t in toks[uid]
+                             if t.get("token") not in gone]
+                if not toks[uid]:
+                    toks.pop(uid)
+            save_push(reg)
+
+
+def _push_waker_loop():
+    """Mirror the ntfy stream into wakes. Subscribes to every tailarr
+    topic with the admin account (ntfy has no topic wildcards, so the
+    set is enumerated and refreshed by reconnecting every 15 minutes);
+    each message event wakes that topic's readers. Idle when push has
+    no registrations or notifications aren't set up."""
+    while True:
+        try:
+            conf = ntfy_client.load_conf()
+            if not conf or not (load_push().get("tokens") or {}):
+                time.sleep(30)
+                continue
+            base = _ntfy_internal_url(_discover_ntfy())
+            if not base:
+                time.sleep(30)
+                continue
+            topics = [ntfy_client.OPS_TOPIC] + \
+                [ntfy_client.MEDIA_TOPIC_PREFIX + s
+                 for s in _shareable_services()]
+            admin = conf.get("admin") or {}
+            if admin.get("token"):
+                auth = f"Bearer {admin['token']}"
+            else:
+                auth = "Basic " + base64.b64encode(
+                    f"{admin.get('user', '')}:{admin.get('password', '')}"
+                    .encode()).decode()
+            req = urllib.request.Request(
+                f"{base.rstrip('/')}/{','.join(topics)}/json",
+                headers={"Authorization": auth})
+            deadline = time.time() + 900
+            # 60s read timeout > ntfy's 45s keepalive cadence: a healthy
+            # stream never times out; a wedged one reconnects.
+            with urllib.request.urlopen(req, timeout=60) as r:
+                for line in r:
+                    if time.time() > deadline:
+                        break
+                    try:
+                        ev = json.loads(line.decode("utf-8", "replace"))
+                    except ValueError:
+                        continue
+                    if ev.get("event") == "message" and ev.get("topic"):
+                        _push_handle_topic(ev["topic"])
+        except Exception as e:  # the waker must never die
+            print(f"push waker: {e}")
+        time.sleep(10)
 
 
 _notify_state_lock = threading.Lock()
@@ -6548,6 +6721,9 @@ def _maintenance_loop():
     # "Re-run setup": redeploy the app self-config gateway if it went
     # missing. Cheap no-op when it's already up.
     threading.Thread(target=_converge_notifications, daemon=True).start()
+    # Mirror ntfy messages into content-free push wakes (idle unless
+    # devices have registered tokens via the gateway).
+    threading.Thread(target=_push_waker_loop, daemon=True).start()
     while True:
         try:
             ensure_controller_serve()
