@@ -165,12 +165,26 @@ HTTPS, enrolled with a key Tailarr mints through your OAuth client.
 
 Installing pods is the start; the web UI manages the fleet from there:
 
+- **Magic Stacks.** One short form deploys *and fully wires* a working
+  pipeline — not just a bundle of containers. The **Usenet Starter**
+  stack stands up Sonarr, Radarr and a downloader with the indexer,
+  download client, root folders and media notifications already
+  connected; **The Full Library** adds Lidarr and a Prowlarr search hub
+  (one indexer that syncs to every app) with your choice of NZBGet or
+  SABnzbd. Every credential is validated live *before* anything deploys,
+  and existing services are never overwritten.
 - **People, not devices.** Add a user on the Users page and hand them
-  one enrollment key — every device they enroll with it is theirs
-  automatically. Flip a service on for a person and all their devices
-  can reach it (and *see* nothing else on the tailnet); flip it off and
-  access is gone everywhere. Sharing is Tailscale ACLs under the hood,
-  authored for you.
+  one enrollment key — or an **invite QR** the [Tailarr iOS
+  app](https://github.com/scs32/tailarr) scans to onboard in seconds.
+  Every device they enroll is theirs automatically. Flip a service on
+  for a person and all their devices can reach it (and *see* nothing
+  else on the tailnet); flip it off and access is gone everywhere.
+  Rename or revoke any of their devices from the same card, and mark a
+  household member **Basic** to hand them a stripped, single-purpose app.
+  Sharing is Tailscale ACLs under the hood, authored for you.
+- **Accounts vault.** Save your indexer and usenet logins once under
+  **Settings → Accounts** (validated before they're stored, write-only
+  after) and the Magic Stack wizard fills them in for you next time.
 - **Notifications.** One click on the Notifications page sets up a
   self-hosted notification service ([ntfy](https://ntfy.sh)) as a
   hidden system pod: server alerts (pod down, upgrade results, updates
@@ -185,7 +199,9 @@ Installing pods is the start; the web UI manages the fleet from there:
 - **Self-upgrades and monitoring.** The controller updates itself from
   GitHub releases and re-renders the fleet's scripts automatically; a
   Stats page shows live per-pod CPU/memory; Uptime Kuma monitors are a
-  drag away on the Monitor page. Settings has themes, because why not.
+  drag away on the Monitor page. Name the server (so a joining phone
+  shows "Living Room", not a hostname), pull private images from your own
+  registry, and pick from ten themes — all in Settings.
 
 ## Adding a service
 
@@ -396,11 +412,15 @@ welcome.
 ## Development
 
 ```sh
-bash tests/smoke.sh   # engine end-to-end (create.sh → generated scripts), podman stubbed
+bash tests/smoke.sh        # engine end-to-end (create.sh → generated scripts), podman stubbed
+python3 tests/web-api.py   # controller API (upgrade, NFS, users, gateway, stacks, …)
+python3 tests/web-shares.py
+cd web/ui && npm run typecheck && npm run build   # the SPA
 ```
 
-CI runs shellcheck + the smoke test on every push; tags build the
-multi-arch controller image to `ghcr.io/scs32/tailarr`.
+CI runs shellcheck, the smoke test, the Python API/shares suites, and the
+UI typecheck + build on every push; tags build the multi-arch controller
+image to `ghcr.io/scs32/tailarr`.
 
 ## License
 
