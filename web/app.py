@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.27.1"
+VERSION = "0.28.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -2431,6 +2431,142 @@ def op_registry_delete(host):
     del reg[host]
     save_registries(reg)
     return {"ok": True, "error": None}
+
+
+# =========================================================================
+# Accounts vault (Settings → Accounts) — saved provider accounts.
+#
+# The crisp boundary: ONLY accounts with OUTSIDE services that Tailarr
+# cannot derive or extract — exactly the set of things a Magic Stack
+# wizard would otherwise have to ask for (newznab indexers, usenet
+# providers). Anything extractable from a pod (Arr keys, nzbget logins)
+# stays extracted-live-never-stored. Secrets are write-only through the
+# API: GET /api/accounts returns labels and public detail, never keys or
+# passwords — the controller uses them server-side (stack wizards resolve
+# {"account": id} references in _stack_inputs).
+ACCOUNTS_FILE = os.path.join(PODS_DIR, ".accounts.json")
+
+
+def load_accounts():
+    try:
+        with open(ACCOUNTS_FILE) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_accounts(acc):
+    _write_secret(ACCOUNTS_FILE, json.dumps(acc, indent=2) + "\n")
+
+
+def _account_detail(e):
+    """The public half shown in lists — never the key/password."""
+    if e.get("kind") == "usenet":
+        return (("ssl://" if e.get("ssl", True) else "") + str(e.get("host", ""))
+                + ":" + str(e.get("port", "")) + " · " + str(e.get("user", "")))
+    return e.get("url", "")
+
+
+def status_accounts():
+    return {"accounts": [
+        {"id": aid, "kind": e.get("kind", ""),
+         "label": e.get("label", ""), "detail": _account_detail(e)}
+        for aid, e in sorted(load_accounts().items(),
+                             key=lambda kv: (kv[1].get("kind", ""),
+                                             kv[1].get("label", "").lower()))]}
+
+
+def _account_upsert(kind, label, fields):
+    """Create or update by natural identity — an indexer IS its URL, a
+    usenet account is host+user — so re-saving (from the card or a
+    wizard's save-through) never piles up duplicates."""
+    acc = load_accounts()
+
+    def ident(e):
+        # An indexer IS its host (paste shapes differ in path — /api or
+        # bare — but it's the same indexer); a usenet account is
+        # host+user (providers sell multiple accounts).
+        return _account_host_label(e.get("url")) if kind == "newznab" \
+            else (e.get("host"), e.get("user"))
+
+    new = dict(fields)
+    for aid, e in acc.items():
+        if e.get("kind") == kind and ident(e) == ident(new):
+            e.update(new)
+            e["label"] = label or e.get("label", "")
+            save_accounts(acc)
+            return aid
+    aid = secrets.token_hex(4)
+    acc[aid] = {"kind": kind, "label": label, **new,
+                "created": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                         time.gmtime())}
+    save_accounts(acc)
+    return aid
+
+
+def _account_host_label(url_or_host):
+    return re.sub(r"^https?://", "", str(url_or_host or "")).split("/")[0]
+
+
+def op_account_save(data):
+    """Validate LIVE, then save — the private-registries contract: prove
+    the account works before storing it, so the vault only ever holds
+    known-good entries."""
+    kind = (data.get("kind") or "").strip()
+    label = _clean(data.get("label"), 60)
+    if kind == "newznab":
+        url = _indexer_base(data.get("url"))
+        key = _clean(data.get("key")) or _indexer_pasted_key(data.get("url"))
+        err = _validate_newznab(url, key)
+        if err:
+            return {"ok": False, "error": err}
+        aid = _account_upsert(kind, label or _account_host_label(url),
+                              {"url": url, "key": key})
+        return {"ok": True, "error": None, "id": aid,
+                "status": status_accounts()}
+    if kind == "usenet":
+        host, embedded_port = _usenet_host(data.get("host"))
+        ssl_on = bool(data.get("ssl", True))
+        port = embedded_port or data.get("port") or (563 if ssl_on else 119)
+        user = _clean(data.get("user"), 120)
+        password = _clean(data.get("password"), 120)
+        err = _validate_usenet(host, port, ssl_on, user, password)
+        if err:
+            return {"ok": False, "error": err}
+        aid = _account_upsert(kind, label or host,
+                              {"host": host, "port": port, "ssl": ssl_on,
+                               "user": user, "password": password})
+        return {"ok": True, "error": None, "id": aid,
+                "status": status_accounts()}
+    return {"ok": False, "error": "Unknown account type."}
+
+
+def op_account_delete(data):
+    acc = load_accounts()
+    aid = (data.get("id") or "").strip()
+    if aid not in acc:
+        return {"ok": False, "error": "No such account."}
+    del acc[aid]
+    save_accounts(acc)
+    return {"ok": True, "error": None, "status": status_accounts()}
+
+
+def _account_resolved(section, kind):
+    """A wizard slot may reference a saved account ({"account": id})
+    instead of carrying raw fields — resolve it so validate and install
+    both see plain inputs (and the secret never round-trips through the
+    browser). Returns (fields, error)."""
+    section = section or {}
+    ref = (section.get("account") or "").strip() \
+        if isinstance(section.get("account"), str) else ""
+    if not ref:
+        return section, None
+    e = load_accounts().get(ref)
+    if not e or e.get("kind") != kind:
+        return {}, ("That saved account is gone — pick another or enter "
+                    "the details.")
+    return e, None
 
 
 # =========================================================================
@@ -5201,8 +5337,8 @@ def _stack_inputs(data):
     """Normalize + sanity-check the wizard's inputs — forgivingly: fix
     the paste shapes people actually produce rather than bouncing them.
     Returns (inputs, errors-by-field)."""
-    idx = data.get("indexer") or {}
-    use = data.get("usenet") or {}
+    idx, idx_err = _account_resolved(data.get("indexer"), "newznab")
+    use, use_err = _account_resolved(data.get("usenet"), "usenet")
     host, embedded_port = _usenet_host(use.get("host"))
     inputs = {
         "media": _clean(data.get("media"), 300),
@@ -5219,6 +5355,10 @@ def _stack_inputs(data):
                    "password": _clean(use.get("password"), 120)},
     }
     errors = {}
+    if idx_err:
+        errors["indexer"] = idx_err
+    if use_err:
+        errors["usenet"] = use_err
     m = inputs["media"]
     if not m.startswith("/") or ".." in m.split("/"):
         errors["media"] = "Pick an absolute folder on the host."
@@ -5231,17 +5371,33 @@ def op_stack_validate(data):
     inputs, errors = _stack_inputs(data)
     checks = {"media": {"ok": "media" not in errors,
                         "error": errors.get("media")}}
-    err = _validate_newznab(inputs["indexer"]["url"],
-                            inputs["indexer"]["key"])
+    err = errors.get("indexer") or _validate_newznab(
+        inputs["indexer"]["url"], inputs["indexer"]["key"])
     checks["indexer"] = {"ok": not err, "error": err}
     u = inputs["usenet"]
-    err = _validate_usenet(u["host"], u["port"], u["ssl"],
-                           u["user"], u["password"])
+    err = errors.get("usenet") or _validate_usenet(
+        u["host"], u["port"], u["ssl"], u["user"], u["password"])
     checks["usenet"] = {"ok": not err, "error": err}
     ok = all(c["ok"] for c in checks.values())
     return {"ok": ok, "error": None if ok
             else "Fix the failing checks and validate again.",
             "checks": checks}
+
+
+def _stack_save_accounts(data, inputs):
+    """The wizard's "Save to Accounts" checkboxes: keep the entered
+    details in the vault for next time. Called from op_stack_install
+    AFTER validation on purpose — the vault only ever holds accounts
+    that just proved they work."""
+    if (data.get("indexer") or {}).get("save"):
+        i = inputs["indexer"]
+        _account_upsert("newznab", _account_host_label(i["url"]),
+                        {"url": i["url"], "key": i["key"]})
+    if (data.get("usenet") or {}).get("save"):
+        u = inputs["usenet"]
+        _account_upsert("usenet", u["host"],
+                        {k: u[k] for k in
+                         ("host", "port", "ssl", "user", "password")})
 
 
 class _StackAbort(Exception):
@@ -5533,6 +5689,7 @@ def op_stack_install(data):
     if not v["ok"]:
         return {"ok": False, "error": v["error"], "checks": v["checks"]}
     inputs, _errs = _stack_inputs(data)
+    _stack_save_accounts(data, inputs)
     with _stack_lock:
         _save_stack_run({"stack": key, "state": "running",
                          "started": int(time.time()), "finished": None,
@@ -6269,6 +6426,9 @@ def api_get(path):
         return 200, status_tokens()
     if path == "/api/registries":
         return 200, status_registries()
+
+    if path == "/api/accounts":
+        return 200, status_accounts()
     if path == "/api/shares":
         return 200, {"shares": status_shares()}
     if path == "/api/sources":
@@ -6434,6 +6594,16 @@ def api_post(path, data):
             result = op_registry_save(data)
         elif do == "delete":
             result = op_registry_delete((data.get("registry") or "").strip().lower())
+        else:
+            result = {"ok": False, "error": f"unknown do '{do}'"}
+        return (200 if result["ok"] else 400), result
+
+    if path == "/api/accounts":
+        do = (data.get("do") or "").strip()
+        if do == "save":
+            result = op_account_save(data)
+        elif do == "delete":
+            result = op_account_delete(data)
         else:
             result = {"ok": False, "error": f"unknown do '{do}'"}
         return (200 if result["ok"] else 400), result

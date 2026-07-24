@@ -3,7 +3,12 @@
 // polled step list. Greenfield-only in v1 — ineligible stacks never get
 // this far (the card is disabled with a tooltip).
 import { useEffect, useRef, useState } from "react";
-import type { MagicStack, StackCheck, StackRun } from "../types";
+import type {
+  MagicStack,
+  ProviderAccount,
+  StackCheck,
+  StackRun,
+} from "../types";
 import { api } from "../api";
 import { Alert } from "./Alert";
 import { Field, FormSection, Toggle } from "./Form";
@@ -26,11 +31,19 @@ export function MagicStackWizard({
   const [media, setMedia] = useState("");
   const [idxUrl, setIdxUrl] = useState("");
   const [idxKey, setIdxKey] = useState("");
+  const [idxSave, setIdxSave] = useState(true);
   const [nHost, setNHost] = useState("");
   const [nPort, setNPort] = useState("563");
   const [nSsl, setNSsl] = useState(true);
   const [nUser, setNUser] = useState("");
   const [nPass, setNPass] = useState("");
+  const [nSave, setNSave] = useState(true);
+  // Saved accounts (Settings → Accounts) fill a slot instead of asking
+  // again: "" = enter details, otherwise the saved account's id. The
+  // secret never reaches the browser — the server resolves the id.
+  const [accounts, setAccounts] = useState<ProviderAccount[]>([]);
+  const [idxSel, setIdxSel] = useState("");
+  const [useSel, setUseSel] = useState("");
   const [busy, setBusy] = useState(false);
   const [checks, setChecks] = useState<Checks | null>(null);
   const [error, setError] = useState("");
@@ -44,6 +57,27 @@ export function MagicStackWizard({
     },
     [],
   );
+
+  // Preselect the first saved account of each kind — the point of the
+  // vault is that a re-run asks for nothing.
+  useEffect(() => {
+    api
+      .accounts()
+      .then((s) => {
+        if (!live.current) return;
+        setAccounts(s.accounts);
+        const idx = s.accounts.find((a) => a.kind === "newznab");
+        const use = s.accounts.find((a) => a.kind === "usenet");
+        if (idx) setIdxSel(idx.id);
+        if (use) setUseSel(use.id);
+      })
+      .catch(() => {
+        /* vault empty or unreachable — the form still works */
+      });
+  }, []);
+
+  const idxAccounts = accounts.filter((a) => a.kind === "newznab");
+  const useAccounts = accounts.filter((a) => a.kind === "usenet");
 
   // While a run is active, poll the step list; on any terminal state let
   // the page behind refresh (new pods exist now).
@@ -66,14 +100,19 @@ export function MagicStackWizard({
   const body = () => ({
     stack: stack.key,
     media,
-    indexer: { url: idxUrl, key: idxKey },
-    usenet: {
-      host: nHost,
-      port: nPort,
-      ssl: nSsl,
-      user: nUser,
-      password: nPass,
-    },
+    indexer: idxSel
+      ? { account: idxSel }
+      : { url: idxUrl, key: idxKey, save: idxSave },
+    usenet: useSel
+      ? { account: useSel }
+      : {
+          host: nHost,
+          port: nPort,
+          ssl: nSsl,
+          user: nUser,
+          password: nPass,
+          save: nSave,
+        },
   });
 
   // Any edit invalidates a previous green state — install only ever runs
@@ -126,7 +165,9 @@ export function MagicStackWizard({
   }
 
   const filled =
-    media && idxUrl && idxKey && nHost && nPort && nUser && nPass;
+    media &&
+    (idxSel || (idxUrl && idxKey)) &&
+    (useSel || (nHost && nPort && nUser && nPass));
   const allGreen =
     !!checks && checks.media.ok && checks.indexer.ok && checks.usenet.ok;
 
@@ -222,73 +263,127 @@ export function MagicStackWizard({
             </FormSection>
 
             <FormSection title="Your indexer">
-              <Field
-                label="Indexer URL"
-                hint="The newznab site you search with (e.g. https://api.nzbgeek.info)."
-                error={checks?.indexer.error ?? undefined}
-              >
-                <input
-                  className="input"
-                  value={idxUrl}
-                  placeholder="https://…"
-                  onChange={(e) => touch(setIdxUrl)(e.target.value)}
-                />
-              </Field>
-              <Field label="Indexer API key">
-                <input
-                  className="input"
-                  value={idxKey}
-                  onChange={(e) => touch(setIdxKey)(e.target.value)}
-                />
-              </Field>
+              {idxAccounts.length > 0 && (
+                <Field
+                  label="Indexer"
+                  hint="Saved under Settings → Accounts."
+                  error={idxSel ? (checks?.indexer.error ?? undefined) : undefined}
+                >
+                  <select
+                    className="input"
+                    value={idxSel}
+                    onChange={(e) => touch(setIdxSel)(e.target.value)}
+                  >
+                    {idxAccounts.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.label} — {a.detail}
+                      </option>
+                    ))}
+                    <option value="">Enter details…</option>
+                  </select>
+                </Field>
+              )}
+              {!idxSel && (
+                <>
+                  <Field
+                    label="Indexer URL"
+                    hint="The newznab site you search with (e.g. https://api.nzbgeek.info)."
+                    error={checks?.indexer.error ?? undefined}
+                  >
+                    <input
+                      className="input"
+                      value={idxUrl}
+                      placeholder="https://…"
+                      onChange={(e) => touch(setIdxUrl)(e.target.value)}
+                    />
+                  </Field>
+                  <Field label="Indexer API key">
+                    <input
+                      className="input"
+                      value={idxKey}
+                      onChange={(e) => touch(setIdxKey)(e.target.value)}
+                    />
+                  </Field>
+                  <Toggle checked={idxSave} onChange={setIdxSave}>
+                    Save to Accounts for next time
+                  </Toggle>
+                </>
+              )}
             </FormSection>
 
             <FormSection title="Your usenet account">
-              <Field
-                label="News server"
-                hint="From your usenet provider (e.g. news.eweka.nl)."
-                error={checks?.usenet.error ?? undefined}
-              >
-                <input
-                  className="input"
-                  value={nHost}
-                  onChange={(e) => touch(setNHost)(e.target.value)}
-                />
-              </Field>
-              <div className="folder-row">
-                <Field label="Port">
-                  <input
-                    className="input"
-                    style={{ width: 90 }}
-                    value={nPort}
-                    onChange={(e) => touch(setNPort)(e.target.value)}
-                  />
-                </Field>
-                <Toggle
-                  checked={nSsl}
-                  onChange={(v) => {
-                    touch(setNSsl)(v);
-                    setNPort(v ? "563" : "119");
-                  }}
+              {useAccounts.length > 0 && (
+                <Field
+                  label="Usenet account"
+                  hint="Saved under Settings → Accounts."
+                  error={useSel ? (checks?.usenet.error ?? undefined) : undefined}
                 >
-                  SSL
-                </Toggle>
-              </div>
-              <Field label="Username">
-                <input
-                  className="input"
-                  value={nUser}
-                  onChange={(e) => touch(setNUser)(e.target.value)}
-                />
-              </Field>
-              <Field label="Password">
-                <input
-                  className="input"
-                  type="password"
-                  value={nPass}
-                  onChange={(e) => touch(setNPass)(e.target.value)}
-                />
-              </Field>
+                  <select
+                    className="input"
+                    value={useSel}
+                    onChange={(e) => touch(setUseSel)(e.target.value)}
+                  >
+                    {useAccounts.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.label} — {a.detail}
+                      </option>
+                    ))}
+                    <option value="">Enter details…</option>
+                  </select>
+                </Field>
+              )}
+              {!useSel && (
+                <>
+                  <Field
+                    label="News server"
+                    hint="From your usenet provider (e.g. news.eweka.nl)."
+                    error={checks?.usenet.error ?? undefined}
+                  >
+                    <input
+                      className="input"
+                      value={nHost}
+                      onChange={(e) => touch(setNHost)(e.target.value)}
+                    />
+                  </Field>
+                  <div className="folder-row">
+                    <Field label="Port">
+                      <input
+                        className="input"
+                        style={{ width: 90 }}
+                        value={nPort}
+                        onChange={(e) => touch(setNPort)(e.target.value)}
+                      />
+                    </Field>
+                    <Toggle
+                      checked={nSsl}
+                      onChange={(v) => {
+                        touch(setNSsl)(v);
+                        setNPort(v ? "563" : "119");
+                      }}
+                    >
+                      SSL
+                    </Toggle>
+                  </div>
+                  <Field label="Username">
+                    <input
+                      className="input"
+                      value={nUser}
+                      onChange={(e) => touch(setNUser)(e.target.value)}
+                    />
+                  </Field>
+                  <Field label="Password">
+                    <input
+                      className="input"
+                      type="password"
+                      value={nPass}
+                      onChange={(e) => touch(setNPass)(e.target.value)}
+                    />
+                  </Field>
+                  <Toggle checked={nSave} onChange={setNSave}>
+                    Save to Accounts for next time
+                  </Toggle>
+                </>
+              )}
             </FormSection>
 
             {checks && (
