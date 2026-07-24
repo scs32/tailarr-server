@@ -118,9 +118,8 @@ export function InstallModal({
 
             <FormSection title="Networking">
               <p className="field__hint" style={{ margin: 0 }}>
-                Every pod gets its own tailnet identity with HTTPS via{" "}
-                <code>tailscale serve</code> — https://{item.name}
-                .&lt;tailnet&gt;.ts.net.
+                Every service gets its own private HTTPS address — https://{item.name}
+                .&lt;your-domain&gt;.ts.net.
               </p>
               <AuthKeyField
                 configured={tsapiOk}

@@ -79,7 +79,7 @@ export function Network() {
           ? {
               kind: "ok",
               text: funnel
-                ? `${e.name} is now PUBLIC at https://${e.dns_name || e.name} — needs the funnel nodeAttr in your tailnet policy to actually serve.`
+                ? `${e.name} is now PUBLIC at https://${e.dns_name || e.name} — needs the public-access setting in your network policy to actually serve.`
                 : `${e.name} is private again (tailnet-only).`,
             }
           : { kind: "err", text: r.error ?? r.status },
@@ -96,20 +96,20 @@ export function Network() {
     <>
       <h1 className="page-title">Network</h1>
       <p style={{ color: "var(--muted)", margin: 0 }}>
-        Each pod is its own device on your tailnet, reachable over HTTPS at its
-        MagicDNS name via <code>tailscale serve</code>. “Make public” exposes a
-        pod to the whole internet through Tailscale Funnel.
+        Each service gets its own private HTTPS address, reachable from your
+        devices — no ports exposed. “Make public” exposes a service to the whole
+        internet through Tailscale Funnel.
       </p>
 
       <FlashView flash={flash} onClose={clear} />
 
       <RelaySection status={relay} busy={relayBusy} onAct={relayAct} />
 
-      <div className="section-title">Pods</div>
+      <div className="section-title">Services</div>
       {entries === null ? (
         <p style={{ color: "var(--muted)", margin: 0 }}>Loading…</p>
       ) : entries.length === 0 ? (
-        <p style={{ color: "var(--muted)", margin: 0 }}>No pods deployed.</p>
+        <p style={{ color: "var(--muted)", margin: 0 }}>No services deployed.</p>
       ) : (
         <div className="row-list">
           {entries.map((e) => (
@@ -151,7 +151,7 @@ export function Network() {
                   className="select"
                   style={{ width: "auto" }}
                   disabled={relayBusy}
-                  title="Which of your devices relays this pod's traffic when direct connections fail"
+                  title="Which of your devices relays this service's traffic when direct connections fail"
                   value={
                     relay.pod_relays[e.controller ? "server" : e.name] ?? ""
                   }
@@ -184,7 +184,7 @@ export function Network() {
                 </span>
               )}
               {e.controller ? (
-                <span className="preview-label">controller — managed by bootstrap</span>
+                <span className="preview-label">Tailarr — managed automatically</span>
               ) : (
                 e.https && (
                   <button
@@ -196,8 +196,8 @@ export function Network() {
                     disabled={!!busyPod || !!e.busy}
                     title={
                       e.funnel
-                        ? "Back to tailnet-only access"
-                        : "Expose this pod to the public internet via Tailscale Funnel (live, no restart)"
+                        ? "Back to private access"
+                        : "Expose this service to the public internet (live, no restart)"
                     }
                     onClick={() =>
                       e.funnel ? setFunnel(e, false) : setConfirmPublic(e)
@@ -224,7 +224,7 @@ export function Network() {
           internet</strong> at https://{confirmPublic.dns_name || "its MagicDNS name"}{" "}
           via Tailscale Funnel — anyone with the URL can reach it, no tailnet
           required. The flip is live (no restart) and requires the{" "}
-          <code>funnel</code> nodeAttr in your tailnet policy.
+          public-access setting in your network policy.
         </ConfirmDialog>
       )}
     </>

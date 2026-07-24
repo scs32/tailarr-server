@@ -136,7 +136,7 @@ export function Users() {
     try {
       const r = await api.person({ do: "reissue", id });
       if (r.ok && r.key) setKey({ who: name, key: r.key });
-      else show({ kind: "err", text: r.error ?? "Couldn't mint a key." });
+      else show({ kind: "err", text: r.error ?? "Couldn't create a key." });
     } finally {
       setBusyKey("");
     }
@@ -160,7 +160,7 @@ export function Users() {
         r.ok
           ? {
               kind: "ok",
-              text: `Removed ${name}. Their devices keep tailnet enrollment but lost all access.`,
+              text: `Removed ${name}. Their devices stay connected but lost all access.`,
             }
           : { kind: "err", text: r.error ?? "Delete failed." },
       );
@@ -233,7 +233,7 @@ export function Users() {
   async function revokeDevice(node: string, label: string) {
     if (
       !window.confirm(
-        `Revoke ${label}? It's removed from the tailnet and loses all access ` +
+        `Revoke ${label}? It's disconnected and loses all access ` +
           "immediately. It can only rejoin with a new enrollment key.",
       )
     )
@@ -312,7 +312,7 @@ export function Users() {
             <div style={{ display: "flex", gap: "var(--sp-2)" }}>
               <button
                 className="btn btn--ghost btn--sm"
-                title="Tag an already-enrolled tailnet device as a user machine"
+                title="Add a device that's already on your network as a user's device"
                 onClick={() => setAdoptOpen(true)}
               >
                 Adopt by ID
@@ -330,7 +330,7 @@ export function Users() {
             <div className="empty" style={{ marginTop: "var(--sp-4)" }}>
               <div className="empty__title">No users yet</div>
               <p style={{ margin: 0 }}>
-                “+ Add user” creates a person and mints their enrollment key.
+                “+ Add user” creates a person and creates their enrollment key.
                 Every device that logs in with it is theirs automatically.
               </p>
             </div>
@@ -372,7 +372,7 @@ export function Users() {
                       (busyKey === `${p.id}:reissue` ? " btn--loading" : "")
                     }
                     disabled={!!busyKey}
-                    title="Mint a fresh enrollment key for this user's next device"
+                    title="Create a fresh enrollment key for this user's next device"
                     onClick={() => reissue(p.id, p.name)}
                   >
                     {busyKey === `${p.id}:reissue` && <SpinnerIcon className="btn-icon" />}
@@ -485,7 +485,7 @@ export function Users() {
                     <button
                       className="btn btn--ghost btn--sm"
                       disabled={!!busyKey}
-                      title="Remove this device from the tailnet"
+                      title="Disconnect this device"
                       onClick={() =>
                         revokeDevice(u.id, u.nickname || u.hostname)
                       }
@@ -574,7 +574,7 @@ export function Users() {
                   </button>
                 </div>
                 <p className="field__hint" style={{ margin: "0 0 var(--sp-3)" }}>
-                  Creates the user and mints their enrollment key in one step.
+                  Creates the user and creates their enrollment key in one step.
                   Devices that log in with the key are theirs automatically
                   and inherit whatever services you grant them — now or later.
                 </p>
@@ -598,7 +598,7 @@ export function Users() {
                     onClick={addPerson}
                   >
                     {addBusy && <SpinnerIcon className="btn-icon" />}
-                    Create + mint key
+                    Create + get key
                   </button>
                 </div>
               </div>
@@ -620,8 +620,8 @@ export function Users() {
                   </button>
                 </div>
                 <p className="field__hint" style={{ margin: "0 0 var(--sp-3)" }}>
-                  For devices already on the tailnet (e.g. an Apple TV that
-                  signed in with an Apple ID). Paste its node ID from the
+                  For devices already on your network (e.g. an Apple TV that
+                  signed in with an Apple ID). Paste its device ID from the
                   Tailscale admin console. Tagging replaces the device’s login
                   ownership — it appears under Unassigned with zero access.
                 </p>
@@ -660,8 +660,8 @@ export function Users() {
               onCancel={() => setDeleting(null)}
             >
               <p>
-                Their devices stay on the tailnet but lose every service
-                badge and the ownership link — they’ll show under Unassigned.
+                Their devices stay connected but lose all service access and
+                the ownership link — they’ll show under Unassigned.
                 Any unused enrollment keys keep working until they expire
                 (24h), but new devices would arrive ownerless.
               </p>

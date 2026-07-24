@@ -177,9 +177,9 @@ export function UpgradeCard() {
 
       {phase === "done" && (
         <Alert kind="ok">
-          Upgraded to <strong>v{newVersion}</strong>. Your pods are being
-          refreshed to the new engine automatically — running pods restart
-          briefly (watch the Dashboard); stopped pods stay stopped.
+          Upgraded to <strong>v{newVersion}</strong>. Your services are being
+          updated automatically — running services restart briefly (watch the
+          Dashboard); stopped services stay stopped.
         </Alert>
       )}
 
@@ -191,11 +191,10 @@ export function UpgradeCard() {
           onCancel={() => setPhase("idle")}
         >
           <p>
-            The controller replaces itself, and afterwards{" "}
-            <strong>every running pod restarts briefly</strong> while its
-            scripts are refreshed to the new engine. Stopped pods get fresh
-            scripts but stay stopped. Pod images are not changed — use each
-            pod’s Update button for that.
+            Tailarr updates itself, and afterwards{" "}
+            <strong>every running service restarts briefly</strong> to apply
+            the update. Stopped services stay stopped. Service versions aren’t
+            changed — use each service’s Update button for that.
           </p>
         </ConfirmDialog>
       )}

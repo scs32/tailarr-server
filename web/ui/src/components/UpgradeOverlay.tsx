@@ -12,7 +12,7 @@ export type UpgradeStage = "pull" | "swap" | "wait";
 
 const STEPS: { key: UpgradeStage; label: string }[] = [
   { key: "pull", label: "Downloading the new release" },
-  { key: "swap", label: "Swapping the controller" },
+  { key: "swap", label: "Updating Tailarr" },
   { key: "wait", label: "Health check + reconnect" },
 ];
 

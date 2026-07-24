@@ -268,7 +268,7 @@ export function RelaySection({
                   (status.mode === "global" ? "btn--secondary" : "btn--ghost")
                 }
                 disabled={busy}
-                title="Every pod relays through the same device"
+                title="Every service relays through the same device"
                 onClick={() => onAct({ do: "mode", mode: "global" })}
               >
                 One relay for everything
@@ -279,7 +279,7 @@ export function RelaySection({
                   (status.mode === "per-pod" ? "btn--secondary" : "btn--ghost")
                 }
                 disabled={busy}
-                title="Pick a relay (or none) per pod, in the list below"
+                title="Pick a relay (or none) per service, in the list below"
                 onClick={() => onAct({ do: "mode", mode: "per-pod" })}
               >
                 Choose per pod

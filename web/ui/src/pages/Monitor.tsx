@@ -278,7 +278,7 @@ export function Monitor() {
                       options={status.pods.map((p) => ({ id: p.name, hint: p.dns_name }))}
                       onAdd={addMonitor}
                       onRemove={removeMonitor}
-                      addLabel="+ Add pod"
+                      addLabel="+ Add service"
                       busyId={busy}
                     />
                   </div>

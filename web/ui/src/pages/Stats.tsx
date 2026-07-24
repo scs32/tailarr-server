@@ -130,8 +130,8 @@ export function Stats() {
     <>
       <h1 className="page-title">Stats</h1>
       <p style={{ color: "var(--muted)", margin: 0 }}>
-        Live CPU and memory for every pod (app container + Tailscale sidecar),
-        refreshed every {POLL_MS / 1000}s.
+        Live CPU and memory for every service, refreshed every{" "}
+        {POLL_MS / 1000}s.
       </p>
 
       {error && (
@@ -154,7 +154,7 @@ export function Stats() {
                   /{snap.totals.pods}
                 </span>
               </div>
-              <div className="stat-tile__label">Pods running</div>
+              <div className="stat-tile__label">Services running</div>
             </div>
             <div className="card stat-tile">
               <div className="stat-tile__big">
@@ -171,7 +171,7 @@ export function Stats() {
           </div>
 
           {snap.pods.length === 0 ? (
-            <p style={{ color: "var(--muted)" }}>No pods deployed yet.</p>
+            <p style={{ color: "var(--muted)" }}>No services deployed yet.</p>
           ) : (
             <div
               className="grid"

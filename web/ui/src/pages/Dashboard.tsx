@@ -51,7 +51,7 @@ export function Dashboard() {
         r.ok
           ? {
               kind: "ok",
-              text: `Fleet ${action}: ${done} pod${done === 1 ? "" : "s"}${skipped}.`,
+              text: `Fleet ${action}: ${done} service${done === 1 ? "" : "s"}${skipped}.`,
             }
           : { kind: "err", text: r.error ?? `Fleet ${action} failed.` },
       );
@@ -74,12 +74,12 @@ export function Dashboard() {
       <p style={{ color: "var(--muted)", margin: 0 }}>
         {pods === null
           ? "Loading…"
-          : `${pods.length} pod${pods.length === 1 ? "" : "s"} · ${running} running · every service on its own tailnet identity`}
+          : `${pods.length} service${pods.length === 1 ? "" : "s"} · ${running} running · each with its own identity`}
       </p>
 
       {error && (
         <div style={{ marginTop: "var(--sp-5)" }}>
-          <Alert kind="err">Couldn’t reach the controller API: {error}</Alert>
+          <Alert kind="err">Couldn’t reach Tailarr: {error}</Alert>
         </div>
       )}
 
@@ -96,7 +96,7 @@ export function Dashboard() {
                   (fleetBusy === "start" ? " btn--loading" : "")
                 }
                 disabled={!!fleetBusy}
-                title="Start every stopped pod (sidecars first)"
+                title="Start every stopped service"
                 onClick={() => runFleet("start")}
               >
                 {fleetBusy === "start" && <SpinnerIcon className="btn-icon" />}
@@ -110,7 +110,7 @@ export function Dashboard() {
                   (fleetBusy === "restart" ? " btn--loading" : "")
                 }
                 disabled={!!fleetBusy}
-                title="Stop then start every pod"
+                title="Stop then start every service"
                 onClick={() => setConfirmFleet("restart")}
               >
                 {fleetBusy === "restart" && <SpinnerIcon className="btn-icon" />}
@@ -124,7 +124,7 @@ export function Dashboard() {
                   (fleetBusy === "stop" ? " btn--loading" : "")
                 }
                 disabled={!!fleetBusy}
-                title="Gracefully stop every pod (the controller stays up)"
+                title="Gracefully stop every service (Tailarr stays running)"
                 onClick={() => setConfirmFleet("stop")}
               >
                 {fleetBusy === "stop" && <SpinnerIcon className="btn-icon" />}
@@ -137,7 +137,7 @@ export function Dashboard() {
       {pods && pods.length === 0 ? (
         <div className="empty">
           <GridIcon className="empty__icon" />
-          <div className="empty__title">No pods deployed yet</div>
+          <div className="empty__title">No services deployed yet</div>
           <p style={{ margin: "0 0 var(--sp-5)" }}>
             Install a service from the catalog, or spin up any OCI image.
           </p>
@@ -146,7 +146,7 @@ export function Dashboard() {
               Browse catalog
             </Link>
             <Link className="btn btn--secondary" to="/custom">
-              + Custom pod
+              + Custom service
             </Link>
           </div>
         </div>
@@ -167,22 +167,21 @@ export function Dashboard() {
 
       {confirmFleet && (
         <ConfirmDialog
-          title={confirmFleet === "stop" ? "Stop all pods?" : "Restart all pods?"}
+          title={confirmFleet === "stop" ? "Stop all services?" : "Restart all services?"}
           confirmLabel={confirmFleet === "stop" ? "Stop all" : "Restart all"}
           onConfirm={() => runFleet(confirmFleet)}
           onCancel={() => setConfirmFleet(null)}
         >
           {confirmFleet === "stop" ? (
             <>
-              Every pod and its Tailscale sidecar gets a graceful stop. The
-              Tailarr controller stays running so you can start everything
-              again from here — shutting down the host or VM itself happens
-              outside this UI, after the pods are down.
+              Every service stops gracefully. Tailarr stays running so you can
+              start everything again from here — shutting down the host or VM
+              itself happens outside this UI, after the services are down.
             </>
           ) : (
             <>
-              Every pod is stopped, then started again (sidecars first). Brief
-              downtime for all services; the controller itself is untouched.
+              Every service is stopped, then started again. Brief downtime for
+              all services; Tailarr itself is untouched.
             </>
           )}
         </ConfirmDialog>
