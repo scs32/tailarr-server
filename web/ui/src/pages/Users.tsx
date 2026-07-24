@@ -8,6 +8,8 @@ import { FlashView, useFlash } from "../components/Flash";
 import { Field } from "../components/Form";
 import { SpinnerIcon } from "../components/Icons";
 import { TsApiWizard } from "../components/TsApiWizard";
+import { QRCodeSVG } from "qrcode.react";
+import { inviteLink } from "../lib/invite";
 
 function ago(iso: string): string {
   if (!iso) return "";
@@ -231,21 +233,36 @@ export function Users() {
           {key && (
             <div className="card" style={{ padding: "var(--sp-4)", marginTop: "var(--sp-3)" }}>
               <div className="row__title">
-                Enrollment key for {key.who} (single-use, expires in 24h)
+                Invite for {key.who} (single-use, expires in 24h)
               </div>
-              <div
-                className="log__body"
-                style={{ margin: "var(--sp-2) 0", userSelect: "all", cursor: "copy" }}
-                title="Click, then copy"
-              >
-                {key.key}
+              <div className="invite-handout">
+                <div className="invite-qr">
+                  <QRCodeSVG
+                    value={inviteLink(window.location.origin, key.key)}
+                    size={160}
+                    marginSize={2}
+                    aria-label={`Enrollment QR code for ${key.who}`}
+                  />
+                </div>
+                <div>
+                  <p className="field__hint" style={{ marginTop: 0 }}>
+                    Scan with the <strong>Tailarr app</strong> to join as{" "}
+                    {key.who} and set up their services automatically. Shown
+                    once — reissue if you lose it.
+                  </p>
+                  <p className="field__hint" style={{ marginBottom: 0 }}>
+                    No app yet? Install Tailscale on their device and log in
+                    with this key:
+                  </p>
+                  <div
+                    className="log__body"
+                    style={{ margin: "var(--sp-2) 0 0", userSelect: "all", cursor: "copy" }}
+                    title="Click, then copy"
+                  >
+                    {key.key}
+                  </div>
+                </div>
               </div>
-              <p className="field__hint" style={{ margin: 0 }}>
-                On their device: install Tailscale and log in with this auth
-                key (e.g. <code>tailscale up --auth-key=…</code>). The device
-                joins as {key.who}’s, already carrying their access. Shown
-                once — reissue if you lose it.
-              </p>
               <div className="preview-row" style={{ marginTop: "var(--sp-3)" }}>
                 <button className="btn btn--ghost btn--sm" onClick={() => setKey(null)}>
                   Dismiss
