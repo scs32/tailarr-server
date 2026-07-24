@@ -313,17 +313,6 @@ export const api = {
       { service, allow },
     ),
 
-  personNotify: (id: string) =>
-    postJSON<{
-      ok: boolean;
-      error: string | null;
-      url?: string;
-      user?: string;
-      password?: string;
-      token?: string;
-      topics?: string[];
-    }>(`/api/people/${id}/notifications`, {}),
-
   monitorSetup: (body: { url: string; username: string; password: string }) =>
     postJSON<{ ok: boolean; error: string | null; fresh?: boolean }>(
       "/api/monitor/setup",
