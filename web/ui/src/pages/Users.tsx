@@ -249,6 +249,15 @@ export function Users() {
     }
   }
 
+  async function copyText(text: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      show({ kind: "ok", text: `${label} copied.` });
+    } catch {
+      show({ kind: "err", text: "Couldn't copy — select the text and copy it manually." });
+    }
+  }
+
   async function adopt() {
     const id = adoptId.trim();
     if (!id || adopting) return;
@@ -316,47 +325,6 @@ export function Users() {
               </button>
             </div>
           </div>
-
-          {key && (
-            <div className="card" style={{ padding: "var(--sp-4)", marginTop: "var(--sp-3)" }}>
-              <div className="row__title">
-                Invite for {key.who} (single-use, expires in 24h)
-              </div>
-              <div className="invite-handout">
-                <div className="invite-qr">
-                  <QRCodeSVG
-                    value={inviteLink(window.location.origin, key.key)}
-                    size={160}
-                    marginSize={2}
-                    aria-label={`Enrollment QR code for ${key.who}`}
-                  />
-                </div>
-                <div>
-                  <p className="field__hint" style={{ marginTop: 0 }}>
-                    Scan with the <strong>Tailarr app</strong> to join as{" "}
-                    {key.who} and set up their services automatically. Shown
-                    once — reissue if you lose it.
-                  </p>
-                  <p className="field__hint" style={{ marginBottom: 0 }}>
-                    No app yet? Install Tailscale on their device and log in
-                    with this key:
-                  </p>
-                  <div
-                    className="log__body"
-                    style={{ margin: "var(--sp-2) 0 0", userSelect: "all", cursor: "copy" }}
-                    title="Click, then copy"
-                  >
-                    {key.key}
-                  </div>
-                </div>
-              </div>
-              <div className="preview-row" style={{ marginTop: "var(--sp-3)" }}>
-                <button className="btn btn--ghost btn--sm" onClick={() => setKey(null)}>
-                  Dismiss
-                </button>
-              </div>
-            </div>
-          )}
 
           {status.people.length === 0 && (
             <div className="empty" style={{ marginTop: "var(--sp-4)" }}>
@@ -528,6 +496,78 @@ export function Users() {
                 ))}
               </div>
             </>
+          )}
+
+          {key && (
+            <div className="scrim" onClick={() => setKey(null)}>
+              <div
+                className="modal modal--narrow"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="modal__head">
+                  <span className="modal__title">Invite {key.who}</span>
+                  <div className="spacer" />
+                  <button
+                    className="btn btn--ghost btn--sm"
+                    onClick={() => setKey(null)}
+                  >
+                    Close
+                  </button>
+                </div>
+                <p
+                  className="field__hint"
+                  style={{ margin: "0 0 var(--sp-3)", textAlign: "center" }}
+                >
+                  Scan with the <strong>Tailarr app</strong> to join as{" "}
+                  {key.who} and set up their services automatically.
+                  <br />
+                  Single-use, expires in 24h — shown once.
+                </p>
+                <div className="invite-qr invite-qr--modal">
+                  <QRCodeSVG
+                    value={inviteLink(window.location.origin, key.key)}
+                    size={200}
+                    marginSize={2}
+                    aria-label={`Enrollment QR code for ${key.who}`}
+                  />
+                </div>
+                <div className="field__label" style={{ marginTop: "var(--sp-4)" }}>
+                  Prefer not to scan?
+                </div>
+                <div className="preview-row" style={{ marginTop: "var(--sp-2)" }}>
+                  <button
+                    className="btn btn--sm"
+                    title="A link you can text or email — opens the Tailarr app and sets everything up"
+                    onClick={() =>
+                      copyText(
+                        inviteLink(window.location.origin, key.key),
+                        "Invite link",
+                      )
+                    }
+                  >
+                    Copy invite link
+                  </button>
+                  <button
+                    className="btn btn--sm"
+                    title="The raw enrollment key, for `tailscale up --auth-key=…` on a device without the app"
+                    onClick={() => copyText(key.key, "Enrollment key")}
+                  >
+                    Copy enrollment key
+                  </button>
+                </div>
+                <p className="field__hint" style={{ margin: "var(--sp-3) 0 var(--sp-1)" }}>
+                  No app? Install Tailscale on the device and log in with the
+                  key (<code>tailscale up --auth-key=…</code>):
+                </p>
+                <div
+                  className="log__body"
+                  style={{ userSelect: "all", cursor: "copy" }}
+                  title="Click to select, then copy"
+                >
+                  {key.key}
+                </div>
+              </div>
+            </div>
           )}
 
           {addOpen && (

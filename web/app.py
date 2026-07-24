@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.31.0"
+VERSION = "0.32.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
