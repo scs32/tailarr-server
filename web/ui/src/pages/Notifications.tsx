@@ -183,24 +183,38 @@ export function Notifications() {
               The last notification failed to send: {status.publish_error}
             </Alert>
           )}
+          {status.state !== "running" && (
+            <Alert kind="err">
+              Notifications aren’t sending right now — the notification
+              service isn’t running. Try <strong>Re-run setup</strong> below.
+            </Alert>
+          )}
+          {!status.gateway && (
+            <Alert kind="err">
+              Automatic setup for the Tailarr app isn’t working —{" "}
+              <strong>Re-run setup</strong> to turn it on (requires v0.22.1+).
+            </Alert>
+          )}
           <div className="card panel">
             <div className="row-list">
               <div>
                 <div className="row__title">
-                  Notification service{" "}
+                  Notifications{" "}
                   <span
                     className={
                       "chip" +
-                      (status.state === "running" ? " chip--installed" : "")
+                      (status.state === "running"
+                        ? " chip--installed"
+                        : " chip--danger")
                     }
                   >
-                    {status.state || "unknown"}
+                    {status.state === "running" ? "on" : "off"}
                   </span>
                 </div>
                 <div className="row__meta">
-                  You’re alerted about: service updates available, Tailarr
-                  upgrades and rollbacks, a service going down or recovering,
-                  and sign-in problems.
+                  You’re alerted about service updates, Tailarr upgrades and
+                  rollbacks, a service going down or recovering, and sign-in
+                  problems.
                 </div>
               </div>
               <div>
@@ -215,43 +229,9 @@ export function Notifications() {
                   </span>
                 </div>
                 <div className="row__meta">
-                  {status.funnel_on ? (
-                    <>
-                      Reachable from anywhere:{" "}
-                      <code>{status.public_url || "setting up…"}</code>
-                    </>
-                  ) : (
-                    <>
-                      Phones away from home can’t receive until phone delivery
-                      is on.
-                    </>
-                  )}
-                </div>
-              </div>
-              <div>
-                <div className="row__title">
-                  Tailarr app auto-setup{" "}
-                  <span
-                    className={
-                      "chip" + (status.gateway ? " chip--installed" : " chip--danger")
-                    }
-                  >
-                    {status.gateway ? "working" : "not running"}
-                  </span>
-                </div>
-                <div className="row__meta">
-                  {status.gateway ? (
-                    <>
-                      Tailarr-app users get their notification setup
-                      automatically — nothing to hand out.
-                    </>
-                  ) : (
-                    <>
-                      Automatic setup for the Tailarr app isn’t available
-                      yet — <strong>Re-run setup</strong> to turn it on
-                      (requires v0.22.1+).
-                    </>
-                  )}
+                  {status.funnel_on
+                    ? "Notifications reach your phone even when you’re away from home."
+                    : "Phones away from home can’t receive until phone delivery is on."}
                 </div>
               </div>
             </div>
