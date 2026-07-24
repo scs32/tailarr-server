@@ -71,11 +71,6 @@ export function Settings() {
           )}
         </div>
 
-        <div className="section-title">Themes</div>
-        <div className="card panel">
-          <ThemesCard />
-        </div>
-
         <div className="section-title">Accounts</div>
         <div className="card panel">
           <AccountsCard />
@@ -84,6 +79,11 @@ export function Settings() {
         <div className="section-title">Private registries</div>
         <div className="card panel">
           <RegistriesCard />
+        </div>
+
+        <div className="section-title">Themes</div>
+        <div className="card panel">
+          <ThemesCard />
         </div>
       </div>
     </>
