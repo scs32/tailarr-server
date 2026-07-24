@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.28.0"
+VERSION = "0.29.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -1062,6 +1062,13 @@ TS_PERSON_PREFIX = "tag:tailarr-u-"
 # tag:tailarr-can-server's grant dst is tag:tailarr-ctrl, not a svc- tag;
 # the API's bearer-token auth is the real permission boundary behind it.
 SERVER_SERVICE = "server"
+# Pseudo-service granting the app's Search module the saved newznab
+# indexers (Accounts vault). Unlike every other badge it maps to NO
+# tailnet tag — indexers are public internet services the phone reaches
+# directly, not tailnet devices — so _person_badge_tags deliberately
+# never resolves it. It exists only to gate the indexer handout, so a
+# paid indexer key reaches only people the admin grants Search to.
+SEARCH_SERVICE = "search"
 
 
 _oauth_lock = threading.Lock()
@@ -1201,10 +1208,23 @@ def _shareable_services():
             if s not in CONTROLLER_PODS and not _is_system(s)]
 
 
+def _vault_indexers():
+    """Saved newznab accounts from the vault, sorted for a stable
+    handout. Empty when the vault has none."""
+    return sorted(
+        ((aid, e) for aid, e in load_accounts().items()
+         if e.get("kind") == "newznab"),
+        key=lambda kv: (kv[1].get("label", "").lower(), kv[0]))
+
+
 def status_users():
     """People (first-class users, each with their devices) plus
     unassigned user machines (enrolled without a person tag)."""
     services = _shareable_services() + [SERVER_SERVICE]
+    # "search" is grantable only once there are indexers to hand out —
+    # no point offering an empty capability.
+    if _vault_indexers():
+        services.append(SEARCH_SERVICE)
     people = load_people()
     people_out = [{"id": uid, "name": p.get("name", uid),
                    "badges": sorted(p.get("badges") or []),
@@ -1499,7 +1519,7 @@ def op_person_access(uid, service, allow):
     people = load_people()
     if uid not in people:
         return {"ok": False, "id": uid, "error": "Unknown user."}
-    if service not in _shareable_services() + [SERVER_SERVICE]:
+    if service not in _shareable_services() + [SERVER_SERVICE, SEARCH_SERVICE]:
         return {"ok": False, "id": uid, "error": "Unknown service."}
     badges = set(people[uid].get("badges") or [])
     (badges.add if allow else badges.discard)(service)
@@ -4916,6 +4936,19 @@ def op_person_services(uid):
         services.append({
             "type": kind or "external", "name": svc,
             "url": service_url(network_entry(svc, ps)), "auth": auth})
+    # Search: the saved newznab indexers, gated on the "search" badge.
+    # These are NOT tailnet pods — url is the indexer's own public
+    # address and the app's Search module reaches it directly. Multiple
+    # entries are expected (a person can have several indexers), so the
+    # app must ACCUMULATE type "indexer", not dedup it like native
+    # single-slot modules.
+    if SEARCH_SERVICE in (people[uid].get("badges") or []):
+        for _aid, e in _vault_indexers():
+            services.append({
+                "type": "indexer",
+                "name": e.get("label") or _account_host_label(e.get("url")),
+                "url": e.get("url", ""),
+                "auth": {"api_key": e.get("key", "")}})
     return {"ok": True, "error": None, "kind": "services",
             "services": services}
 
