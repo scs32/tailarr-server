@@ -522,14 +522,33 @@ export interface StackCheck {
 export interface StackInputs {
   stack: string;
   media: string;
-  indexer: { url: string; key: string };
-  usenet: {
-    host: string;
-    port: number | string;
-    ssl: boolean;
-    user: string;
-    password: string;
-  };
+  // Each slot is either raw details (with optional save-through to the
+  // Accounts vault) or a reference to a saved account by id.
+  indexer: { url: string; key: string; save?: boolean } | { account: string };
+  usenet:
+    | {
+        host: string;
+        port: number | string;
+        ssl: boolean;
+        user: string;
+        password: string;
+        save?: boolean;
+      }
+    | { account: string };
+}
+
+// GET /api/accounts — saved provider accounts (Settings → Accounts).
+// Secrets are write-only: entries carry a public detail line, never the
+// key/password.
+export interface ProviderAccount {
+  id: string;
+  kind: "newznab" | "usenet";
+  label: string;
+  detail: string;
+}
+
+export interface AccountsStatus {
+  accounts: ProviderAccount[];
 }
 
 export interface StackValidateResult {

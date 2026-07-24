@@ -2,6 +2,7 @@
 // proxies /api to a locally-running app.py (see vite.config.ts).
 
 import type {
+  AccountsStatus,
   ActionResult,
   BackupEntry,
   BuiltinCatalog,
@@ -232,6 +233,22 @@ export const api = {
       do: "delete",
       registry,
     }),
+
+  accounts: () => getJSON<AccountsStatus>("/api/accounts"),
+
+  accountSave: (body: Record<string, unknown>) =>
+    postJSON<{
+      ok: boolean;
+      error: string | null;
+      id?: string;
+      status?: AccountsStatus;
+    }>("/api/accounts", { do: "save", ...body }),
+
+  accountDelete: (id: string) =>
+    postJSON<{ ok: boolean; error: string | null; status?: AccountsStatus }>(
+      "/api/accounts",
+      { do: "delete", id },
+    ),
 
   tokens: () => getJSON<TokensStatus>("/api/tokens"),
 

@@ -2463,6 +2463,95 @@ try:
 finally:
     app.podman = _real_st_podman
 
+# --- Accounts vault (v0.28.0): validate-then-save, redaction, stack ------
+# wizard integration. Validators are faked — their live behavior has its
+# own suites above.
+_real_v_nz = app._validate_newznab
+_real_v_un = app._validate_usenet
+app._validate_newznab = lambda url, key: (
+    None if key == "goodkey" else "The indexer says: Invalid API Key")
+app._validate_usenet = lambda host, port, ssl_on, user, pw: (
+    None if pw == "goodpass" else "Sign-in failed.")
+try:
+    code, data = post("/api/accounts", {
+        "do": "save", "kind": "newznab", "label": "Geek",
+        "url": "api.nzbgeek.info", "key": "goodkey"})
+    check(code == 200 and data["ok"] and data["id"],
+          "indexer account validates live and saves")
+    _acc_id = data["id"]
+    code, data = get("/api/accounts")
+    _entry = data["accounts"][0]
+    check(_entry["label"] == "Geek" and _entry["kind"] == "newznab"
+          and _entry["detail"] == "https://api.nzbgeek.info"
+          and "key" not in _entry and "goodkey" not in json.dumps(data),
+          "GET /api/accounts is redacted: labels + detail, never secrets")
+    mode = os.stat(os.path.join(pods, ".accounts.json")).st_mode & 0o777
+    check(mode == 0o600
+          and app.load_accounts()[_acc_id]["key"] == "goodkey",
+          ".accounts.json is private (0600) and holds the real key")
+    code, data = post("/api/accounts", {
+        "do": "save", "kind": "newznab",
+        "url": "https://api.nzbgeek.info", "key": "badkey"})
+    check(code == 400 and "Invalid API Key" in data["error"]
+          and len(app.load_accounts()) == 1,
+          "a failing account is refused and never stored")
+    code, data = post("/api/accounts", {
+        "do": "save", "kind": "newznab", "label": "Geek2",
+        "url": "api.nzbgeek.info/api", "key": "goodkey"})
+    check(code == 200 and data["id"] == _acc_id
+          and len(app.load_accounts()) == 1
+          and app.load_accounts()[_acc_id]["label"] == "Geek2",
+          "re-saving the same indexer upserts — no duplicates")
+    code, data = post("/api/accounts", {
+        "do": "save", "kind": "usenet", "host": "ssl://news.eweka.nl:563",
+        "user": "u1", "password": "goodpass"})
+    check(code == 200 and data["ok"], "usenet account validates and saves")
+    _use_id = data["id"]
+    code, data = get("/api/accounts")
+    _udet = next(a for a in data["accounts"] if a["kind"] == "usenet")
+    check(_udet["detail"] == "ssl://news.eweka.nl:563 · u1"
+          and "goodpass" not in json.dumps(data),
+          "usenet detail shows host/port/user, never the password")
+
+    # Stack wizard slots resolve {"account": id} server-side.
+    _inp, _errs = app._stack_inputs({
+        "media": "/data/media",
+        "indexer": {"account": _acc_id},
+        "usenet": {"account": _use_id}})
+    check(_inp["indexer"] == {"url": "https://api.nzbgeek.info/api",
+                              "key": "goodkey"}
+          and _inp["usenet"]["host"] == "news.eweka.nl"
+          and _inp["usenet"]["password"] == "goodpass" and not _errs,
+          "stack inputs resolve saved accounts into full details")
+    r = app.op_stack_validate({
+        "media": "/data/media",
+        "indexer": {"account": "deadbeef"},
+        "usenet": {"account": _use_id}})
+    check(not r["ok"] and "gone" in (r["checks"]["indexer"]["error"] or ""),
+          "a dangling account reference fails its check with a clear error")
+
+    # Save-through: the wizard's "Save to Accounts" checkbox.
+    _st_data = {"indexer": {"url": "api.other.test", "key": "goodkey",
+                            "save": True},
+                "usenet": {"host": "news.other.test", "user": "u2",
+                           "password": "goodpass"}}
+    _st_inp, _ = app._stack_inputs(_st_data)
+    app._stack_save_accounts(_st_data, _st_inp)
+    _kinds = [(e["kind"], e.get("url") or e.get("host"))
+              for e in app.load_accounts().values()]
+    check(("newznab", "https://api.other.test") in _kinds
+          and ("usenet", "news.other.test") not in _kinds,
+          "save-through keeps exactly the slots that asked to be kept")
+
+    code, data = post("/api/accounts", {"do": "delete", "id": _use_id})
+    check(code == 200 and _use_id not in app.load_accounts(),
+          "delete removes the account")
+    code, data = post("/api/accounts", {"do": "delete", "id": "nope"})
+    check(code == 400, "deleting an unknown account is refused")
+finally:
+    app._validate_newznab = _real_v_nz
+    app._validate_usenet = _real_v_un
+
 # Arr wiring: schema-driven create-or-update with category + baseUrl
 # mapping.
 _wire_calls = []

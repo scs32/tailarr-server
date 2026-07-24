@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { TsApiStatus } from "../types";
 import { api } from "../api";
 import { Alert } from "../components/Alert";
+import { AccountsCard } from "../components/AccountsCard";
 import { RegistriesCard } from "../components/RegistriesCard";
 import { ThemesCard } from "../components/ThemesCard";
 import { TsApiWizard } from "../components/TsApiWizard";
@@ -73,6 +74,11 @@ export function Settings() {
         <div className="section-title">Themes</div>
         <div className="card panel">
           <ThemesCard />
+        </div>
+
+        <div className="section-title">Accounts</div>
+        <div className="card panel">
+          <AccountsCard />
         </div>
 
         <div className="section-title">Private registries</div>
