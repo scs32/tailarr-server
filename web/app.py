@@ -1232,16 +1232,13 @@ def status_users():
                   for uid, p in people.items()]
     people_out.sort(key=lambda p: p["name"].lower())
     by_uid = {p["id"]: p for p in people_out}
-    ntfy_on = bool(ntfy_client.load_conf())
     if not _ts_token():
         return {"configured": False, "error": None, "users": [],
-                "people": people_out, "services": services,
-                "ntfy": ntfy_on}
+                "people": people_out, "services": services}
     code, data = ts_api("GET", "/tailnet/-/devices")
     if code != 200:
         return {"configured": True, "error": f"devices API: {data}",
-                "users": [], "people": people_out, "services": services,
-                "ntfy": ntfy_on}
+                "users": [], "people": people_out, "services": services}
     nicks = load_user_nicks()
     users = []
     for d in data.get("devices", []):
@@ -1268,10 +1265,7 @@ def status_users():
     for p in people_out:
         p["devices"].sort(key=lambda u: u["hostname"].lower())
     return {"configured": True, "error": None, "users": users,
-            "people": people_out, "services": services,
-            # Person cards show their notification handout only when
-            # the ntfy system pod is set up.
-            "ntfy": ntfy_on}
+            "people": people_out, "services": services}
 
 
 def op_user_nick(node_id, nickname):
