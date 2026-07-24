@@ -212,6 +212,12 @@ export const api = {
       nickname,
     }),
 
+  userRevoke: (id: string) =>
+    postJSON<{ ok: boolean; error: string | null }>(
+      `/api/users/${id}/revoke`,
+      {},
+    ),
+
   userKey: () =>
     postJSON<{ ok: boolean; error: string | null; key: string }>(
       "/api/users/keys",

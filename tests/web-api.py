@@ -1823,6 +1823,13 @@ def _fake_people_api(method, path, body=None):
                 d["tags"] = body["tags"]
                 return 200, {}
         return 404, "no such device"
+    if method == "DELETE" and path.startswith("/device/"):
+        nid = path.split("/")[2]
+        before = len(_fake_devices["devices"])
+        _fake_devices["devices"] = [
+            d for d in _fake_devices["devices"] if d["nodeId"] != nid]
+        return (200, {}) if len(_fake_devices["devices"]) < before \
+            else (404, "no such device")
     return 200, {}
 
 
@@ -1883,6 +1890,24 @@ try:
     check(code == 200 and f"tag:tailarr-u-{uid}" in d2["tags"]
           and "tag:tailarr-can-apitest" in d2["tags"],
           "assigning a machine adds the identity tag and the user's badges")
+
+    # revoke: DELETE a device from the tailnet + forget its nickname
+    # (a throwaway device so the reconcile tests below keep their fixtures)
+    _fake_devices["devices"].append(
+        {"nodeId": "revdev", "hostname": "old-phone", "os": "iOS",
+         "tags": ["tag:tailarr-user"]})
+    app.op_user_nick("revdev", "old phone")
+    check(app.load_user_nicks().get("revdev") == "old phone",
+          "nickname saved before revoke")
+    code, data = post("/api/users/revdev/revoke", {})
+    check(code == 200 and data["ok"]
+          and not any(d["nodeId"] == "revdev"
+                      for d in _fake_devices["devices"])
+          and "revdev" not in app.load_user_nicks(),
+          "revoke deletes the device from the tailnet and forgets its name")
+    code, data = post("/api/users/nope404/revoke", {})
+    check(code == 400 and not data["ok"],
+          "revoking an unknown device fails cleanly")
 
     # reconcile self-heals a device that drifted from its person's badges
     d2["tags"] = ["tag:tailarr-user", f"tag:tailarr-u-{uid}"]
