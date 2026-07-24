@@ -190,6 +190,17 @@ export function Users() {
     }
   }
 
+  async function setBasic(id: string, basic: boolean) {
+    setBusyKey(`${id}:basic`);
+    try {
+      const r = await api.person({ do: "basic", id, basic });
+      if (!r.ok) show({ kind: "err", text: r.error ?? "Failed to update." });
+      await refresh();
+    } finally {
+      setBusyKey("");
+    }
+  }
+
   async function toggleDevice(id: string, service: string, allow: boolean) {
     if (
       service === "server" &&
@@ -366,6 +377,25 @@ export function Users() {
                     {p.devices.length} device{p.devices.length === 1 ? "" : "s"}
                   </span>
                   <div className="spacer" />
+                  <button
+                    className={
+                      "btn btn--sm " +
+                      (p.basic ? "btn--primary" : "btn--ghost") +
+                      (busyKey === `${p.id}:basic` ? " btn--loading" : "")
+                    }
+                    disabled={!!busyKey}
+                    title={
+                      p.basic
+                        ? "Basic mode is on: this user's app hides settings and opens straight into their main app. Click for the full experience."
+                        : "Basic mode: give this user a stripped, single-purpose app (no settings, no drawer) that opens into their main app."
+                    }
+                    onClick={() => setBasic(p.id, !p.basic)}
+                  >
+                    {busyKey === `${p.id}:basic` && (
+                      <SpinnerIcon className="btn-icon" />
+                    )}
+                    {p.basic ? "Basic ✓" : "Basic"}
+                  </button>
                   <button
                     className={
                       "btn btn--ghost btn--sm" +

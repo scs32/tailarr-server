@@ -198,6 +198,10 @@ export interface Person {
   id: string;
   name: string;
   badges: string[]; // per-user access switches (services)
+  // Presentation tier (UX only, never gates access): when true the app
+  // gets {"ui": {"basic": true}} in its /self/services handout and drops
+  // into a stripped, drawerless "request app" experience.
+  basic: boolean;
   created: number;
   devices: UserMachine[];
 }
@@ -288,6 +292,9 @@ export interface TsApiCredential {
 export interface Info {
   pods_dir: string;
   controller_pods: string[];
+  // Admin-chosen display name of this Tailarr Server (e.g. "Living
+  // Room"); "" means fall back to the host-derived name.
+  name: string;
   version: string;
   upgrade_available: boolean; // a newer controller release is known
   tsapi: TsApiStatus;
@@ -488,6 +495,8 @@ export interface MagicStack {
   name: string;
   blurb: string;
   services: string[];
+  // Downloaders the wizard offers; a single entry means no choice.
+  downloaders: string[];
   blockers: string[];
   eligible: boolean;
 }
@@ -520,6 +529,9 @@ export interface StackCheck {
 
 export interface StackInputs {
   stack: string;
+  // The chosen usenet downloader (nzbget | sabnzbd); omitted when the
+  // stack fixes it.
+  downloader?: string;
   media: string;
   // Each slot is either raw details (with optional save-through to the
   // Accounts vault) or a reference to a saved account by id.

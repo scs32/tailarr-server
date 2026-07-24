@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.36.0"
+VERSION = "0.37.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -1047,6 +1047,7 @@ def op_backup_delete(name, ts):
 # See docs/acl-design.md.
 # =========================================================================
 TSAPI_FILE = os.path.join(PODS_DIR, ".tsapi.json")
+SERVER_FILE = os.path.join(PODS_DIR, ".server.json")
 USERS_FILE = os.path.join(PODS_DIR, ".users.json")
 TS_USER_TAG = "tag:tailarr-user"
 TS_CAN_PREFIX = "tag:tailarr-can-"
@@ -1228,6 +1229,7 @@ def status_users():
     people = load_people()
     people_out = [{"id": uid, "name": p.get("name", uid),
                    "badges": sorted(p.get("badges") or []),
+                   "basic": bool(p.get("basic")),
                    "created": p.get("created", 0), "devices": []}
                   for uid, p in people.items()]
     people_out.sort(key=lambda p: p["name"].lower())
@@ -1474,6 +1476,14 @@ def op_person(data):
         if not name:
             return {"ok": False, "error": "A name is required."}
         people[uid]["name"] = name
+        save_people(people)
+        return {"ok": True, "id": uid, "error": None}
+    if do == "basic":
+        # The "basic" presentation tier — UX ONLY. It changes nothing about
+        # access (badges/tags are untouched, so no policy sync): it only sets
+        # the flag the gateway hands the app to shape its chrome. See the
+        # ui-policy note in op_person_services.
+        people[uid]["basic"] = bool(data.get("basic"))
         save_people(people)
         return {"ok": True, "id": uid, "error": None}
     if do == "reissue":
@@ -2712,6 +2722,31 @@ def op_tsapi_validate(data):
             "The credential is missing write scope(s) or was rejected for: "
             + ", ".join(failed) + ". Recreate the OAuth client with "
             "Devices/Core, Auth Keys and Policy File write scopes."}
+
+
+def load_server_name():
+    """The admin-chosen display name of this Tailarr Server (e.g. "Living
+    Room"). Empty when unset — callers fall back to the host-derived name.
+    Rides /api/info so the app can name invite-enrolled profiles by the
+    server instead of the always-"Tailarr" MagicDNS hostname."""
+    try:
+        with open(SERVER_FILE) as f:
+            data = json.load(f)
+        return _clean(data.get("name", ""), 60) if isinstance(data, dict) \
+            else ""
+    except (OSError, ValueError):
+        return ""
+
+
+def op_server_save(data):
+    """Set (or clear) the server display name. Empty is valid — it means
+    "fall back to the host name" — so this never fails on content."""
+    name = _clean(data.get("name", ""), 60)
+    tmp = SERVER_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"name": name}, f, indent=2)
+    os.replace(tmp, SERVER_FILE)
+    return {"ok": True, "error": None, "name": name}
 
 
 def op_tsapi_save(data):
@@ -4962,8 +4997,22 @@ def op_person_services(uid):
                 "name": e.get("label") or _account_host_label(e.get("url")),
                 "url": e.get("url", ""),
                 "auth": {"api_key": e.get("key", "")}})
-    return {"ok": True, "error": None, "kind": "services",
-            "services": services}
+    result = {"ok": True, "error": None, "kind": "services",
+              "services": services}
+    # UI policy (v0.37+) — an optional, per-person PRESENTATION tier that
+    # rides the existing handout so the app needs no new endpoint or whois.
+    # It is UX-ONLY and never gates access: badges above decide what the
+    # person can reach; this only shapes chrome. Absent unless the admin
+    # marked the person "basic", so default/older people (and older apps
+    # that ignore the key) get the full experience. The app maps
+    # {"basic": true} to its preset (hide settings, drawerless, land on the
+    # primary granted module). Explicit overrides (e.g. "landing") may be
+    # added here later WITHOUT an app release — but a "landing" must always
+    # name a module the person is actually granted, so we never compute one
+    # from anything but their own badges.
+    if people[uid].get("basic"):
+        result["ui"] = {"basic": True}
+    return result
 
 
 # =========================================================================
@@ -5142,20 +5191,63 @@ def _arr_status():
 # =========================================================================
 STACKS_FILE = os.path.join(PODS_DIR, ".stacks.json")
 
+# A stack is DATA, not code: `arrs` are wired as media managers, an
+# optional `prowlarr` becomes the single search hub, and `downloaders`
+# lists the usenet clients the user may pick from (one option = no
+# choice). The engine below reads these fields — adding a stack never
+# touches the saga.
 STACKS = {
     "usenet-starter": {
         "name": "Usenet Starter",
         "blurb": "TV and movies over usenet — search, download and "
                  "import, fully connected out of the box.",
-        "services": ["sonarr", "radarr", "nzbget"],
+        "arrs": ["sonarr", "radarr"],
+        "prowlarr": False,
+        "downloaders": ["nzbget"],
         "inputs": ["media", "indexer", "usenet"],
+    },
+    "full-library": {
+        "name": "The Full Library",
+        "blurb": "TV, movies and music, with Prowlarr as one search hub "
+                 "that pushes your indexer to every app — pick nzbget or "
+                 "SABnzbd and Tailarr wires the rest.",
+        "arrs": ["sonarr", "radarr", "lidarr"],
+        "prowlarr": True,
+        "downloaders": ["nzbget", "sabnzbd"],
+        "inputs": ["media", "indexer", "usenet", "downloader"],
     },
 }
 
 # Per-Arr wiring facts: root folder under the shared /data mount + the
-# download category the Arr tells nzbget to file things under.
+# download category the Arr tells its downloader to file things under.
 STACK_ARR_ROOTS = {"sonarr": ("/data/media/tv", "tv"),
-                   "radarr": ("/data/media/movies", "movies")}
+                   "radarr": ("/data/media/movies", "movies"),
+                   "lidarr": ("/data/media/music", "music")}
+
+# The tailnet port each downloader listens on inside its pod.
+STACK_DL_PORTS = {"nzbget": 6789, "sabnzbd": 8080}
+
+
+def _stack_downloader(spec, data):
+    """The chosen downloader for a run: the sole option when a stack
+    fixes it, else the wizard's pick (falling back to the first)."""
+    dls = (spec or {}).get("downloaders") or ["nzbget"]
+    choice = (data.get("downloader") or "").strip().lower()
+    return choice if choice in dls else dls[0]
+
+
+def _stack_services(spec, downloader):
+    """The concrete pods a run deploys, in wiring order: media managers,
+    the chosen downloader, then the search hub."""
+    return list(spec["arrs"]) + [downloader] \
+        + (["prowlarr"] if spec.get("prowlarr") else [])
+
+
+def stack_service_universe(spec):
+    """Every service the stack could touch regardless of the downloader
+    choice — the set the greenfield guardrail checks against."""
+    return list(spec["arrs"]) + list(spec.get("downloaders") or []) \
+        + (["prowlarr"] if spec.get("prowlarr") else [])
 
 
 def load_stack_run():
@@ -5203,8 +5295,10 @@ def _stack_finish(state, error=None):
 def stack_blockers(spec):
     """Deployed pods that collide with a stack's services — the v1
     greenfield guardrail. Kind-matched (a pod named `tv` running the
-    sonarr image still blocks), not just name-matched."""
-    kinds = set(spec["services"])
+    sonarr image still blocks), not just name-matched. Checks the whole
+    downloader universe: a stopped SABnzbd blocks even a run that would
+    have chosen nzbget."""
+    kinds = set(stack_service_universe(spec))
     out = set()
     for name in deployed_services():
         if name in kinds or (_service_kind(name) or "") in kinds \
@@ -5218,9 +5312,15 @@ def status_stacks():
     stacks = []
     for key, spec in STACKS.items():
         blockers = stack_blockers(spec)
+        # The card rail shows one coherent pipeline (managers → hub →
+        # default downloader); the wizard offers the full choice.
+        pipeline = list(spec["arrs"]) \
+            + (["prowlarr"] if spec.get("prowlarr") else []) \
+            + [spec["downloaders"][0]]
         stacks.append({
             "key": key, "name": spec["name"], "blurb": spec["blurb"],
-            "services": spec["services"], "blockers": blockers,
+            "services": pipeline, "downloaders": list(spec["downloaders"]),
+            "blockers": blockers,
             "eligible": not blockers
             and not (run and run["state"] == "running"),
         })
@@ -5387,6 +5487,7 @@ def _stack_inputs(data):
     use, use_err = _account_resolved(data.get("usenet"), "usenet")
     host, embedded_port = _usenet_host(use.get("host"))
     inputs = {
+        "downloader": _stack_downloader(STACKS.get(data.get("stack")), data),
         "media": _clean(data.get("media"), 300),
         "indexer": {"url": _indexer_base(idx.get("url")),
                     # A full pasted API URL often carries the key —
@@ -5517,10 +5618,82 @@ def _stack_seed_nzbget(usenet):
     return "news server configured"
 
 
-def _stack_wait_arr(pod):
-    """Block until the Arr's API answers: sidecar up, config.xml
+def _sab_api(ip, port, key, params):
+    """One SABnzbd API call over the tailnet. Returns (status, json)."""
+    q = urllib.parse.urlencode({**params, "apikey": key, "output": "json"})
+    req = urllib.request.Request(f"http://{ip}:{port}/api?{q}")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status, json.load(r)
+    except urllib.error.HTTPError as e:
+        return e.code, None
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return 0, None
+
+
+def _sab_ensure_categories(ip, port, key):
+    """Best-effort: make sure the tv/movies/music categories the Arrs
+    file under exist, so SABnzbd doesn't drop everything into Default."""
+    _code, cfg = _sab_api(ip, port, key,
+                          {"mode": "get_config", "section": "categories"})
+    have = {c.get("name") for c in
+            (((cfg or {}).get("config") or {}).get("categories")) or []}
+    for _root, cat in STACK_ARR_ROOTS.values():
+        if cat in have:
+            continue
+        _sab_api(ip, port, key, {
+            "mode": "set_config", "section": "categories",
+            "keyword": cat, "name": cat, "dir": cat, "pp": "3",
+            "script": "Default", "priority": "-100"})
+
+
+def _stack_seed_sabnzbd(usenet):
+    """Add the news-server (and the media categories) to SABnzbd through
+    its own API — the api_key is read from sabnzbd.ini once it writes it
+    on first run. Seed-once: an existing server is the user's provider,
+    so the server list is left untouched."""
+    entry = network_entry("sabnzbd", ps_all())
+    ip = entry.get("ip")
+    port = next(iter(entry["ports"].values()), "8080")
+    deadline = time.time() + 180
+    key = None
+    while time.time() < deadline:
+        key = (_service_auth("sabnzbd", "sabnzbd") or {}).get("api_key")
+        if ip and key and _sab_api(ip, port, key,
+                                   {"mode": "version"})[0] == 200:
+            break
+        time.sleep(3)
+        entry = network_entry("sabnzbd", ps_all())
+        ip = entry.get("ip") or ip
+    else:
+        raise _StackAbort("SABnzbd's API never came up")
+    _code, cfg = _sab_api(ip, port, key,
+                          {"mode": "get_config", "section": "servers"})
+    if (((cfg or {}).get("config") or {}).get("servers")):
+        _sab_ensure_categories(ip, port, key)
+        return "already configured — server left untouched"
+    code, _resp = _sab_api(ip, port, key, {
+        "mode": "set_config", "section": "servers",
+        "keyword": usenet["host"], "host": usenet["host"],
+        "port": str(usenet["port"]), "username": usenet["user"],
+        "password": usenet["password"], "connections": "8",
+        "ssl": "1" if usenet["ssl"] else "0", "enable": "1"})
+    if code != 200:
+        raise _StackAbort("SABnzbd rejected the news server")
+    _sab_ensure_categories(ip, port, key)
+    return "news server configured"
+
+
+def _stack_seed_downloader(downloader, usenet):
+    """Seed the chosen downloader with the user's usenet account."""
+    if downloader == "sabnzbd":
+        return _stack_seed_sabnzbd(usenet)
+    return _stack_seed_nzbget(usenet)
+
+
+def _stack_wait_api(pod, ver):
+    """Block until a *arr-family API answers: sidecar up, config.xml
     written, /system/status 200. Returns (base, key)."""
-    _kind, ver = _arr_kind(pod)
     deadline = time.time() + 240
     while time.time() < deadline:
         entry = network_entry(pod, ps_all())
@@ -5533,6 +5706,12 @@ def _stack_wait_arr(pod):
                 return base, key
         time.sleep(5)
     raise _StackAbort(f"{pod}'s API never came up")
+
+
+def _stack_wait_arr(pod):
+    """`_stack_wait_api` keyed on the Arr's own API version."""
+    _kind, ver = _arr_kind(pod)
+    return _stack_wait_api(pod, ver)
 
 
 def _arr_err_detail(resp):
@@ -5588,10 +5767,28 @@ def _stack_arr_ensure(base, key, path, implementation, name, values,
             f"rejected (HTTP {code}){_arr_err_detail(resp)}")
 
 
-def _stack_wire_arr(pod, inputs, nz_ip, nz_auth):
-    """Everything one Arr needs: media folders, the download client,
-    the indexer. The Arr live-tests each object on save, so success
-    here is proof the whole chain connects."""
+def _stack_dl_values(downloader, dl_ip, dl_conn, category):
+    """The download-client schema fields for the chosen downloader —
+    nzbget authenticates with a control user/pass, SABnzbd with its API
+    key. The category field's exact name varies by Arr (tvCategory /
+    movieCategory / musicCategory) so it's matched by suffix."""
+    cat = lambda n: category if n.lower().endswith("category") else None
+    if downloader == "sabnzbd":
+        return "sabnzbd", {"host": dl_ip, "port": STACK_DL_PORTS["sabnzbd"],
+                           "useSsl": False,
+                           "apiKey": dl_conn.get("api_key", ""),
+                           "*category": cat}
+    return "nzbget", {"host": dl_ip, "port": STACK_DL_PORTS["nzbget"],
+                      "useSsl": False,
+                      "username": dl_conn.get("user", ""),
+                      "password": dl_conn.get("password", ""),
+                      "*category": cat}
+
+
+def _stack_wire_arr(pod, inputs, downloader, dl_ip, dl_conn, add_indexer):
+    """Everything one Arr needs: media folders, the download client, and
+    (when there's no Prowlarr hub) the indexer. The Arr live-tests each
+    object on save, so success here is proof the chain connects."""
     root, category = STACK_ARR_ROOTS[pod]
     base, key = _stack_wait_arr(pod)
     r = podman("exec", pod, "sh", "-c",
@@ -5608,17 +5805,12 @@ def _stack_wire_arr(pod, inputs, nz_ip, nz_auth):
         if code not in (200, 201):
             raise _StackAbort(
                 f"root folder (HTTP {code}){_arr_err_detail(resp)}")
-    _stack_arr_ensure(
-        base, key, "/downloadclient", "nzbget", "Tailarr nzbget",
-        {"host": nz_ip, "port": 6789, "useSsl": False,
-         "username": nz_auth.get("user", ""),
-         "password": nz_auth.get("password", ""),
-         # The category field's exact name varies by Arr (tvCategory /
-         # movieCategory) — match by suffix.
-         "*category": lambda n: (category
-                                 if n.lower().endswith("category")
-                                 else None)},
-        extra={"protocol": "usenet"})
+    impl, values = _stack_dl_values(downloader, dl_ip, dl_conn, category)
+    _stack_arr_ensure(base, key, "/downloadclient", impl,
+                      f"Tailarr {downloader}", values,
+                      extra={"protocol": "usenet"})
+    if not add_indexer:
+        return "folders and download client connected"
     idx_url = inputs["indexer"]["url"]
     if idx_url.endswith("/api"):
         idx_url = idx_url[:-4]
@@ -5630,11 +5822,54 @@ def _stack_wire_arr(pod, inputs, nz_ip, nz_auth):
     return "folders, download client and indexer connected"
 
 
+def _stack_wire_prowlarr(inputs, arrs):
+    """The search hub: add the indexer to Prowlarr ONCE, then register
+    each Arr as a full-sync Application so Prowlarr pushes the indexer
+    (and keeps it in sync) to every app — no per-Arr indexer needed."""
+    base, key = _stack_wait_api("prowlarr", "v1")
+    ps = ps_all()
+    pl_entry = network_entry("prowlarr", ps)
+    pl_port = next(iter(pl_entry["ports"].values()), "9696")
+    if not pl_entry.get("ip"):
+        raise _StackAbort("Prowlarr has no tailnet address yet")
+    pl_url = f"http://{pl_entry['ip']}:{pl_port}"
+    idx_url = inputs["indexer"]["url"]
+    if idx_url.endswith("/api"):
+        idx_url = idx_url[:-4]
+    _stack_arr_ensure(
+        base, key, "/indexer", "newznab", "Tailarr indexer",
+        {"baseUrl": idx_url, "apiKey": inputs["indexer"]["key"]},
+        extra={"enableRss": True, "enableAutomaticSearch": True,
+               "enableInteractiveSearch": True, "protocol": "usenet"})
+    wired = []
+    for arr in arrs:
+        entry = network_entry(arr, ps)
+        port = next(iter(entry["ports"].values()), "")
+        akey = _arr_api_key(arr)
+        if not (entry.get("ip") and port and akey):
+            raise _StackAbort(f"{arr} has no address for Prowlarr to reach")
+        _stack_arr_ensure(
+            base, key, "/applications", arr, f"Tailarr {arr}",
+            {"prowlarrUrl": pl_url,
+             "baseUrl": f"http://{entry['ip']}:{port}", "apiKey": akey},
+            extra={"syncLevel": "fullSync"})
+        wired.append(arr)
+    return "indexer added; syncing to " + ", ".join(wired)
+
+
 def _stack_worker(key, inputs):
-    """The saga: deploy -> start -> seed nzbget -> wire each Arr ->
-    optional notifications. Steps stream into .stacks.json for the UI;
-    the first failure stops the run with the step's message."""
+    """The saga: deploy -> start -> seed the downloader -> wire each Arr
+    -> (Prowlarr search hub) -> optional notifications. Steps stream into
+    .stacks.json for the UI; the first failure stops the run with the
+    step's message. Reads the stack's DATA (arrs / downloader / prowlarr)
+    — the sequence is identical for every stack."""
     spec = STACKS[key]
+    downloader = inputs.get("downloader") or spec["downloaders"][0]
+    services = _stack_services(spec, downloader)
+    use_prowlarr = spec.get("prowlarr")
+    # With a Prowlarr hub the indexer is added once, centrally; without
+    # one each Arr gets its own indexer.
+    add_indexer = not use_prowlarr
 
     def step(skey, fn):
         _stack_step_set(skey, "running")
@@ -5650,7 +5885,7 @@ def _stack_worker(key, inputs):
                         else "")
 
     try:
-        for svc in spec["services"]:
+        for svc in services:
             def _install(svc=svc):
                 res = op_install(_stack_install_req(svc, inputs["media"]))
                 if not res["ok"]:
@@ -5658,28 +5893,32 @@ def _stack_worker(key, inputs):
                                       or res.get("output", "")[-200:]
                                       or "install failed")
             step(f"install:{svc}", _install)
-        for svc in spec["services"]:
+        for svc in services:
             def _start(svc=svc):
                 res = op_action(svc, "start")
                 if not res["ok"]:
                     raise _StackAbort(res.get("error") or res["status"])
             step(f"start:{svc}", _start)
-        step("usenet", lambda: _stack_seed_nzbget(inputs["usenet"]))
-        nz_entry = network_entry("nzbget", ps_all())
-        nz_auth = _service_auth("nzbget", "nzbget") or {}
-        if not nz_entry.get("ip"):
-            raise _StackAbort("nzbget has no tailnet address yet")
-        for arr in [s for s in spec["services"] if s in STACK_ARR_ROOTS]:
+        step("usenet",
+             lambda: _stack_seed_downloader(downloader, inputs["usenet"]))
+        dl_entry = network_entry(downloader, ps_all())
+        dl_conn = _service_auth(downloader, downloader) or {}
+        if not dl_entry.get("ip"):
+            raise _StackAbort(f"{downloader} has no tailnet address yet")
+        for arr in spec["arrs"]:
             step(f"wire:{arr}",
                  lambda arr=arr: _stack_wire_arr(
-                     arr, inputs, nz_entry["ip"], nz_auth))
+                     arr, inputs, downloader, dl_entry["ip"], dl_conn,
+                     add_indexer))
+        if use_prowlarr:
+            step("prowlarr",
+                 lambda: _stack_wire_prowlarr(inputs, spec["arrs"]))
 
         def _notify():
             if not ntfy_client.load_conf():
                 return "notifications not set up — skipped"
             wired = []
-            for arr in [s for s in spec["services"]
-                        if s in STACK_ARR_ROOTS]:
+            for arr in spec["arrs"]:
                 if op_ntfy_wire(arr).get("ok"):
                     wired.append(arr)
             return ("media alerts on: " + ", ".join(wired)) if wired \
@@ -5696,19 +5935,27 @@ def _stack_worker(key, inputs):
                    priority="high", tags=["rotating_light"])
 
 
-def _stack_steps_for(spec):
+def _stack_steps_for(spec, downloader=None):
+    downloader = downloader or spec["downloaders"][0]
+    services = _stack_services(spec, downloader)
+    wired = "folders, downloader" if spec.get("prowlarr") \
+        else "folders, downloader, indexer"
     steps = []
-    for svc in spec["services"]:
+    for svc in services:
         steps.append({"key": f"install:{svc}", "label": f"Create {svc}",
                       "state": "pending", "detail": ""})
-    for svc in spec["services"]:
+    for svc in services:
         steps.append({"key": f"start:{svc}", "label": f"Start {svc}",
                       "state": "pending", "detail": ""})
     steps.append({"key": "usenet", "label": "Connect your usenet account",
                   "state": "pending", "detail": ""})
-    for arr in [s for s in spec["services"] if s in STACK_ARR_ROOTS]:
+    for arr in spec["arrs"]:
         steps.append({"key": f"wire:{arr}",
-                      "label": f"Wire {arr} (folders, downloader, indexer)",
+                      "label": f"Wire {arr} ({wired})",
+                      "state": "pending", "detail": ""})
+    if spec.get("prowlarr"):
+        steps.append({"key": "prowlarr",
+                      "label": "Connect Prowlarr (one search hub → every app)",
                       "state": "pending", "detail": ""})
     steps.append({"key": "notify", "label": "Media notifications",
                   "state": "pending", "detail": ""})
@@ -5739,7 +5986,9 @@ def op_stack_install(data):
     with _stack_lock:
         _save_stack_run({"stack": key, "state": "running",
                          "started": int(time.time()), "finished": None,
-                         "error": None, "steps": _stack_steps_for(spec)})
+                         "error": None,
+                         "steps": _stack_steps_for(spec,
+                                                   inputs["downloader"])})
     threading.Thread(target=_stack_worker, args=(key, inputs),
                      daemon=True).start()
     return {"ok": True, "error": None}
@@ -6432,6 +6681,7 @@ def api_get(path):
         return 200, {"api_version": 1,
                      "pods_dir": PODS_DIR,
                      "controller_pods": sorted(CONTROLLER_PODS),
+                     "name": load_server_name(),
                      "version": VERSION,
                      "upgrade_available": bool(latest)
                      and _ver_key(latest) > _ver_key(VERSION),
@@ -6669,6 +6919,9 @@ def api_post(path, data):
     if path == "/api/tsapi":
         result = op_tsapi_save(data)
         return (200 if result["ok"] else 400), result
+
+    if path == "/api/server":
+        return 200, op_server_save(data)
 
     # Must precede the /api/users/<id> match — "adopt" is a valid node-ID
     # shape.

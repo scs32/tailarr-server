@@ -17,6 +17,12 @@ import { CheckIcon, SpinnerIcon } from "./Icons";
 
 type Checks = { media: StackCheck; indexer: StackCheck; usenet: StackCheck };
 
+// Display names for the downloader choice (keys are the pod/service ids).
+const DL_LABELS: Record<string, string> = {
+  nzbget: "NZBGet",
+  sabnzbd: "SABnzbd",
+};
+
 export function MagicStackWizard({
   stack,
   initialRun,
@@ -29,6 +35,8 @@ export function MagicStackWizard({
   onChanged: () => void;
 }) {
   const [media, setMedia] = useState("");
+  // The downloader is a choice only when the stack offers more than one.
+  const [downloader, setDownloader] = useState(stack.downloaders[0] ?? "nzbget");
   const [idxUrl, setIdxUrl] = useState("");
   const [idxKey, setIdxKey] = useState("");
   const [idxSave, setIdxSave] = useState(true);
@@ -99,6 +107,7 @@ export function MagicStackWizard({
 
   const body = () => ({
     stack: stack.key,
+    downloader,
     media,
     indexer: idxSel
       ? { account: idxSel }
@@ -261,6 +270,31 @@ export function MagicStackWizard({
                 </div>
               </Field>
             </FormSection>
+
+            {stack.downloaders.length > 1 && (
+              <FormSection title="Your downloader">
+                <Field
+                  label="Usenet downloader"
+                  hint="Both do the same job — pick the one you know, or NZBGet if unsure."
+                >
+                  <div className="preview-row">
+                    {stack.downloaders.map((d) => (
+                      <button
+                        key={d}
+                        type="button"
+                        className={
+                          "btn btn--sm " +
+                          (downloader === d ? "btn--primary" : "btn--ghost")
+                        }
+                        onClick={() => touch(setDownloader)(d)}
+                      >
+                        {DL_LABELS[d] ?? d}
+                      </button>
+                    ))}
+                  </div>
+                </Field>
+              </FormSection>
+            )}
 
             <FormSection title="Your indexer">
               {idxAccounts.length > 0 && (

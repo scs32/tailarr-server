@@ -90,6 +90,11 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
 
 export const api = {
   info: () => getJSON<Info>("/api/info"),
+  serverSave: (name: string) =>
+    postJSON<{ ok: boolean; error: string | null; name: string }>(
+      "/api/server",
+      { name },
+    ),
   pods: () => getJSON<{ pods: Pod[] }>("/api/pods").then((d) => d.pods),
   catalog: () =>
     getJSON<{ catalog: CatalogItem[] }>("/api/catalog").then((d) => d.catalog),
@@ -303,10 +308,11 @@ export const api = {
     ),
 
   person: (body: {
-    do: "add" | "rename" | "reissue" | "delete" | "assign";
+    do: "add" | "rename" | "reissue" | "delete" | "assign" | "basic";
     id?: string;
     name?: string;
     node?: string;
+    basic?: boolean;
   }) =>
     postJSON<{ ok: boolean; error: string | null; id?: string; key?: string }>(
       "/api/people",

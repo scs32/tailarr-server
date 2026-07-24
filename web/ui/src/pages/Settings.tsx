@@ -4,6 +4,7 @@ import { api } from "../api";
 import { Alert } from "../components/Alert";
 import { AccountsCard } from "../components/AccountsCard";
 import { RegistriesCard } from "../components/RegistriesCard";
+import { ServerNameCard } from "../components/ServerNameCard";
 import { ThemesCard } from "../components/ThemesCard";
 import { TsApiWizard } from "../components/TsApiWizard";
 import { UpgradeCard } from "../components/UpgradeCard";
@@ -30,6 +31,11 @@ export function Settings() {
         </div>
         <div className="card panel">
           <UpgradeCard />
+        </div>
+
+        <div className="section-title">Server name</div>
+        <div className="card panel">
+          <ServerNameCard />
         </div>
 
         <div className="section-title">Tailscale API credential</div>
