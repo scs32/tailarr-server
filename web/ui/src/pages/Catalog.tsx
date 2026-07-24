@@ -10,6 +10,7 @@ import type {
 import { api } from "../api";
 import { AddCustomPodModal } from "../components/AddCustomPodModal";
 import { MagicStackWizard } from "../components/MagicStackWizard";
+import { StackRail } from "../components/StackRail";
 import { CatalogCard } from "../components/CatalogCard";
 import { InstallModal } from "../components/InstallModal";
 import { SourcesPanel } from "../components/SourcesPanel";
@@ -219,13 +220,7 @@ export function Catalog() {
                 <div key={st.key} className="card stack-card">
                   <span className="stack-card__name">{st.name}</span>
                   <p style={{ color: "var(--muted)", margin: 0 }}>{st.blurb}</p>
-                  <div className="stack-card__services">
-                    {st.services.map((svc) => (
-                      <span key={svc} className="chip">
-                        {svc}
-                      </span>
-                    ))}
-                  </div>
+                  <StackRail services={st.services} />
                   <div className="preview-row" style={{ marginTop: "auto" }}>
                     <button
                       className="btn btn--primary btn--sm"
