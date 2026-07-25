@@ -1,7 +1,7 @@
-// Magic Stack wizard: collect the stack's few real inputs, live-validate
-// them against the outside world, then run the deploy+wire saga with a
-// polled step list. Greenfield-only in v1 — ineligible stacks never get
-// this far (the card is disabled with a tooltip).
+// Magic Stack wizard: a step-by-step flow that collects the stack's few real
+// inputs, live-validates each one as the user leaves its step, then runs the
+// deploy+wire saga with a polled step list. Greenfield-only in v1 — ineligible
+// stacks never get this far (the card is disabled with a tooltip).
 import { useEffect, useRef, useState } from "react";
 import type {
   MagicStack,
@@ -11,17 +11,29 @@ import type {
 } from "../types";
 import { api } from "../api";
 import { Alert } from "./Alert";
-import { Field, FormSection, Toggle } from "./Form";
+import { Field, Toggle } from "./Form";
 import { FolderBrowser } from "./FolderBrowser";
 import { CheckIcon, SpinnerIcon } from "./Icons";
 
 type Checks = { media: StackCheck; indexer: StackCheck; usenet: StackCheck };
+type StepId = "media" | "downloader" | "indexer" | "usenet" | "review";
 
 // Display names for the downloader choice (keys are the pod/service ids).
 const DL_LABELS: Record<string, string> = {
   nzbget: "NZBGet",
   sabnzbd: "SABnzbd",
 };
+
+const STEP_LABELS: Record<StepId, string> = {
+  media: "Media",
+  downloader: "Downloader",
+  indexer: "Indexer",
+  usenet: "Usenet",
+  review: "Review",
+};
+
+// Steps that run a live check when the user clicks Next.
+const VALIDATABLE = new Set<StepId>(["media", "indexer", "usenet"]);
 
 export function MagicStackWizard({
   stack,
@@ -53,7 +65,8 @@ export function MagicStackWizard({
   const [idxSel, setIdxSel] = useState("");
   const [useSel, setUseSel] = useState("");
   const [busy, setBusy] = useState(false);
-  const [checks, setChecks] = useState<Checks | null>(null);
+  // Per-component check results, filled as each step is validated on Next.
+  const [checks, setChecks] = useState<Partial<Checks>>({});
   const [error, setError] = useState("");
   const [run, setRun] = useState<StackRun | null>(
     initialRun && initialRun.stack === stack.key ? initialRun : null,
@@ -65,6 +78,18 @@ export function MagicStackWizard({
     },
     [],
   );
+
+  // The ordered steps for THIS stack: the downloader step only exists when
+  // there's a choice to make. (Media/indexer/usenet are always asked in v1.)
+  const steps: StepId[] = [
+    "media",
+    ...(stack.downloaders.length > 1 ? (["downloader"] as StepId[]) : []),
+    "indexer",
+    "usenet",
+    "review",
+  ];
+  const [stepIdx, setStepIdx] = useState(0);
+  const stepId = steps[Math.min(stepIdx, steps.length - 1)];
 
   // Preselect the first saved account of each kind — the point of the
   // vault is that a re-run asks for nothing.
@@ -124,25 +149,60 @@ export function MagicStackWizard({
         },
   });
 
-  // Any edit invalidates a previous green state — install only ever runs
-  // straight off a validated form.
-  const touch = <T,>(set: (v: T) => void) => (v: T) => {
-    set(v);
-    setChecks(null);
+  // Any edit invalidates a previous green state — a run only ever starts
+  // from freshly validated inputs.
+  const touch =
+    <T,>(set: (v: T) => void) =>
+    (v: T) => {
+      set(v);
+      setChecks({});
+      setError("");
+    };
+
+  // Whether the current step has enough filled in to advance.
+  const filledFor = (id: StepId): boolean => {
+    switch (id) {
+      case "media":
+        return !!media;
+      case "downloader":
+        return true;
+      case "indexer":
+        return !!(idxSel || (idxUrl && idxKey));
+      case "usenet":
+        return !!(useSel || (nHost && nPort && nUser && nPass));
+      case "review":
+        return true;
+    }
   };
 
-  async function validate() {
-    setBusy(true);
+  function goBack() {
     setError("");
-    try {
-      const r = await api.stackValidate(body());
-      setChecks(r.checks);
-      if (!r.ok) setError(r.error ?? "Fix the failing checks.");
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
+    setStepIdx((i) => Math.max(i - 1, 0));
+  }
+
+  async function goNext() {
+    if (stepId === "review") return install();
+    if (VALIDATABLE.has(stepId) && !checks[stepId as keyof Checks]?.ok) {
+      setBusy(true);
+      setError("");
+      try {
+        const r = await api.stackValidate(body(), stepId as keyof Checks);
+        const c = r.checks[stepId as keyof Checks];
+        if (!live.current) return;
+        setChecks((prev) => ({ ...prev, [stepId]: c }));
+        if (!c.ok) {
+          setError(c.error ?? "That didn't check out — fix it and try again.");
+          return;
+        }
+      } catch (e) {
+        setError(String(e));
+        return;
+      } finally {
+        setBusy(false);
+      }
     }
+    setStepIdx((i) => Math.min(i + 1, steps.length - 1));
+    setError("");
   }
 
   async function install() {
@@ -173,12 +233,12 @@ export function MagicStackWizard({
     }
   }
 
-  const filled =
-    media &&
-    (idxSel || (idxUrl && idxKey)) &&
-    (useSel || (nHost && nPort && nUser && nPass));
-  const allGreen =
-    !!checks && checks.media.ok && checks.indexer.ok && checks.usenet.ok;
+  const idxLabel = idxSel
+    ? (idxAccounts.find((a) => a.id === idxSel)?.label ?? "saved account")
+    : idxUrl || "—";
+  const useLabel = useSel
+    ? (useAccounts.find((a) => a.id === useSel)?.label ?? "saved account")
+    : nHost || "—";
 
   return (
     <div className="scrim" onClick={busy || running ? undefined : onClose}>
@@ -246,241 +306,278 @@ export function MagicStackWizard({
           </>
         ) : (
           <>
-            <p style={{ color: "var(--muted)", margin: "0 0 var(--sp-2)" }}>
-              {stack.blurb} Tailarr wires everything together — these are
-              the only things it can't know.
-            </p>
-
-            <FormSection title="Where media lives">
-              <Field
-                label="Media folder on this server"
-                hint="Downloads, TV and movies all live under this folder."
-                error={checks?.media.error ?? undefined}
-              >
-                <div className="folder-row">
-                  <input
-                    className="input"
-                    value={media}
-                    placeholder="browse for a host folder…"
-                    aria-label="Media folder"
-                    readOnly
-                    title="Use the folder button to browse the host"
-                  />
-                  <FolderBrowser value={media} onPick={touch(setMedia)} />
-                </div>
-              </Field>
-            </FormSection>
-
-            {stack.downloaders.length > 1 && (
-              <FormSection title="Your downloader">
-                <Field
-                  label="Usenet downloader"
-                  hint="Both do the same job — pick the one you know, or NZBGet if unsure."
+            {/* Step rail */}
+            <div className="wiz-rail">
+              {steps.map((s, i) => (
+                <div
+                  key={s}
+                  className={
+                    "wiz-rail__step" +
+                    (i === stepIdx ? " wiz-rail__step--active" : "") +
+                    (i < stepIdx ? " wiz-rail__step--done" : "")
+                  }
                 >
-                  <div className="preview-row">
-                    {stack.downloaders.map((d) => (
-                      <button
-                        key={d}
-                        type="button"
-                        className={
-                          "btn btn--sm " +
-                          (downloader === d ? "btn--primary" : "btn--ghost")
-                        }
-                        onClick={() => touch(setDownloader)(d)}
-                      >
-                        {DL_LABELS[d] ?? d}
-                      </button>
-                    ))}
+                  <span className="wiz-rail__num">
+                    {i < stepIdx ? (
+                      <CheckIcon style={{ width: 12, height: 12 }} />
+                    ) : (
+                      i + 1
+                    )}
+                  </span>
+                  {STEP_LABELS[s]}
+                </div>
+              ))}
+            </div>
+
+            {stepId === "media" && (
+              <>
+                <h3 className="wiz-step__head">Where media lives</h3>
+                <p className="wiz-step__hint">
+                  Downloads, TV and movies all live under this one folder so
+                  the apps can import in place.
+                </p>
+                <Field
+                  label="Media folder on this server"
+                  error={checks.media?.error ?? undefined}
+                >
+                  <div className="folder-row">
+                    <input
+                      className="input"
+                      value={media}
+                      placeholder="browse for a host folder…"
+                      aria-label="Media folder"
+                      readOnly
+                      title="Use the folder button to browse the host"
+                    />
+                    <FolderBrowser value={media} onPick={touch(setMedia)} />
                   </div>
                 </Field>
-              </FormSection>
+              </>
             )}
 
-            <FormSection title="Your indexer">
-              {idxAccounts.length > 0 && (
-                <Field
-                  label="Indexer"
-                  hint="Saved under Settings → Accounts."
-                  error={idxSel ? (checks?.indexer.error ?? undefined) : undefined}
-                >
-                  <select
-                    className="input"
-                    value={idxSel}
-                    onChange={(e) => touch(setIdxSel)(e.target.value)}
-                  >
-                    {idxAccounts.map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.label} — {a.detail}
-                      </option>
-                    ))}
-                    <option value="">Enter details…</option>
-                  </select>
-                </Field>
-              )}
-              {!idxSel && (
-                <>
-                  <Field
-                    label="Indexer URL"
-                    hint="The newznab site you search with (e.g. https://api.nzbgeek.info)."
-                    error={checks?.indexer.error ?? undefined}
-                  >
-                    <input
-                      className="input"
-                      value={idxUrl}
-                      placeholder="https://…"
-                      onChange={(e) => touch(setIdxUrl)(e.target.value)}
-                    />
-                  </Field>
-                  <Field label="Indexer API key">
-                    <input
-                      className="input"
-                      value={idxKey}
-                      onChange={(e) => touch(setIdxKey)(e.target.value)}
-                    />
-                  </Field>
-                  <Toggle checked={idxSave} onChange={setIdxSave}>
-                    Save to Accounts for next time
-                  </Toggle>
-                </>
-              )}
-            </FormSection>
+            {stepId === "downloader" && (
+              <>
+                <h3 className="wiz-step__head">Your downloader</h3>
+                <p className="wiz-step__hint">
+                  Both do the same job — pick the one you know, or NZBGet if
+                  you're unsure.
+                </p>
+                <div className="preview-row">
+                  {stack.downloaders.map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      className={
+                        "btn btn--sm " +
+                        (downloader === d ? "btn--primary" : "btn--ghost")
+                      }
+                      onClick={() => touch(setDownloader)(d)}
+                    >
+                      {DL_LABELS[d] ?? d}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
 
-            <FormSection title="Your usenet account">
-              {useAccounts.length > 0 && (
-                <Field
-                  label="Usenet account"
-                  hint="Saved under Settings → Accounts."
-                  error={useSel ? (checks?.usenet.error ?? undefined) : undefined}
-                >
-                  <select
-                    className="input"
-                    value={useSel}
-                    onChange={(e) => touch(setUseSel)(e.target.value)}
-                  >
-                    {useAccounts.map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.label} — {a.detail}
-                      </option>
-                    ))}
-                    <option value="">Enter details…</option>
-                  </select>
-                </Field>
-              )}
-              {!useSel && (
-                <>
+            {stepId === "indexer" && (
+              <>
+                <h3 className="wiz-step__head">Your indexer</h3>
+                <p className="wiz-step__hint">
+                  The newznab site you search with.
+                </p>
+                {idxAccounts.length > 0 && (
                   <Field
-                    label="News server"
-                    hint="From your usenet provider (e.g. news.eweka.nl)."
-                    error={checks?.usenet.error ?? undefined}
+                    label="Indexer"
+                    hint="Saved under Settings → Accounts."
+                    error={idxSel ? (checks.indexer?.error ?? undefined) : undefined}
                   >
-                    <input
+                    <select
                       className="input"
-                      value={nHost}
-                      onChange={(e) => touch(setNHost)(e.target.value)}
-                    />
+                      value={idxSel}
+                      onChange={(e) => touch(setIdxSel)(e.target.value)}
+                    >
+                      {idxAccounts.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.label} — {a.detail}
+                        </option>
+                      ))}
+                      <option value="">Enter details…</option>
+                    </select>
                   </Field>
-                  <div className="folder-row">
-                    <Field label="Port">
+                )}
+                {!idxSel && (
+                  <>
+                    <Field
+                      label="Indexer URL"
+                      hint="e.g. https://api.nzbgeek.info"
+                      error={checks.indexer?.error ?? undefined}
+                    >
                       <input
                         className="input"
-                        style={{ width: 90 }}
-                        value={nPort}
-                        onChange={(e) => touch(setNPort)(e.target.value)}
+                        value={idxUrl}
+                        placeholder="https://…"
+                        onChange={(e) => touch(setIdxUrl)(e.target.value)}
                       />
                     </Field>
-                    <Toggle
-                      checked={nSsl}
-                      onChange={(v) => {
-                        touch(setNSsl)(v);
-                        setNPort(v ? "563" : "119");
-                      }}
-                    >
-                      SSL
+                    <Field label="Indexer API key">
+                      <input
+                        className="input"
+                        value={idxKey}
+                        onChange={(e) => touch(setIdxKey)(e.target.value)}
+                      />
+                    </Field>
+                    <Toggle checked={idxSave} onChange={setIdxSave}>
+                      Save to Accounts for next time
                     </Toggle>
-                  </div>
-                  <Field label="Username">
-                    <input
-                      className="input"
-                      value={nUser}
-                      onChange={(e) => touch(setNUser)(e.target.value)}
-                    />
-                  </Field>
-                  <Field label="Password">
-                    <input
-                      className="input"
-                      type="password"
-                      value={nPass}
-                      onChange={(e) => touch(setNPass)(e.target.value)}
-                    />
-                  </Field>
-                  <Toggle checked={nSave} onChange={setNSave}>
-                    Save to Accounts for next time
-                  </Toggle>
-                </>
-              )}
-            </FormSection>
-
-            {checks && (
-              <div className="stack-checks">
-                {(
-                  [
-                    ["media", "Media folder"],
-                    ["indexer", "Indexer"],
-                    ["usenet", "Usenet account"],
-                  ] as const
-                ).map(([k, label]) => (
-                  <div
-                    key={k}
-                    className={
-                      "check-row " +
-                      (checks[k].ok ? "check-row--ok" : "check-row--err")
-                    }
-                  >
-                    {checks[k].ok ? "✓" : "✕"} {label}
-                    {!checks[k].ok && checks[k].error
-                      ? ` — ${checks[k].error}`
-                      : ""}
-                  </div>
-                ))}
-              </div>
+                  </>
+                )}
+              </>
             )}
+
+            {stepId === "usenet" && (
+              <>
+                <h3 className="wiz-step__head">Your usenet account</h3>
+                <p className="wiz-step__hint">
+                  The news server your downloader connects to.
+                </p>
+                {useAccounts.length > 0 && (
+                  <Field
+                    label="Usenet account"
+                    hint="Saved under Settings → Accounts."
+                    error={useSel ? (checks.usenet?.error ?? undefined) : undefined}
+                  >
+                    <select
+                      className="input"
+                      value={useSel}
+                      onChange={(e) => touch(setUseSel)(e.target.value)}
+                    >
+                      {useAccounts.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.label} — {a.detail}
+                        </option>
+                      ))}
+                      <option value="">Enter details…</option>
+                    </select>
+                  </Field>
+                )}
+                {!useSel && (
+                  <>
+                    <Field
+                      label="News server"
+                      hint="From your usenet provider (e.g. news.eweka.nl)."
+                      error={checks.usenet?.error ?? undefined}
+                    >
+                      <input
+                        className="input"
+                        value={nHost}
+                        onChange={(e) => touch(setNHost)(e.target.value)}
+                      />
+                    </Field>
+                    <div className="folder-row">
+                      <Field label="Port">
+                        <input
+                          className="input"
+                          style={{ width: 90 }}
+                          value={nPort}
+                          onChange={(e) => touch(setNPort)(e.target.value)}
+                        />
+                      </Field>
+                      <Toggle
+                        checked={nSsl}
+                        onChange={(v) => {
+                          touch(setNSsl)(v);
+                          setNPort(v ? "563" : "119");
+                        }}
+                      >
+                        SSL
+                      </Toggle>
+                    </div>
+                    <Field label="Username">
+                      <input
+                        className="input"
+                        value={nUser}
+                        onChange={(e) => touch(setNUser)(e.target.value)}
+                      />
+                    </Field>
+                    <Field label="Password">
+                      <input
+                        className="input"
+                        type="password"
+                        value={nPass}
+                        onChange={(e) => touch(setNPass)(e.target.value)}
+                      />
+                    </Field>
+                    <Toggle checked={nSave} onChange={setNSave}>
+                      Save to Accounts for next time
+                    </Toggle>
+                  </>
+                )}
+              </>
+            )}
+
+            {stepId === "review" && (
+              <>
+                <h3 className="wiz-step__head">Review</h3>
+                <p className="wiz-step__hint">
+                  {stack.blurb} Everything below checked out — deploy when
+                  you're ready.
+                </p>
+                <div className="wiz-review">
+                  <div className="wiz-review__row">
+                    <span className="wiz-review__k">Media folder</span>
+                    <span className="wiz-review__v">{media}</span>
+                  </div>
+                  {stack.downloaders.length > 1 && (
+                    <div className="wiz-review__row">
+                      <span className="wiz-review__k">Downloader</span>
+                      <span className="wiz-review__v">
+                        {DL_LABELS[downloader] ?? downloader}
+                      </span>
+                    </div>
+                  )}
+                  <div className="wiz-review__row">
+                    <span className="wiz-review__k">Indexer</span>
+                    <span className="wiz-review__v">{idxLabel}</span>
+                  </div>
+                  <div className="wiz-review__row">
+                    <span className="wiz-review__k">Usenet</span>
+                    <span className="wiz-review__v">{useLabel}</span>
+                  </div>
+                </div>
+              </>
+            )}
+
             {error && (
-              <div style={{ marginTop: "var(--sp-3)" }}>
+              <div style={{ marginTop: "var(--sp-4)" }}>
                 <Alert kind="err">{error}</Alert>
               </div>
             )}
 
-            <div className="preview-row" style={{ marginTop: "var(--sp-5)" }}>
-              {allGreen ? (
-                <button
-                  className="btn btn--primary"
-                  disabled={busy}
-                  onClick={install}
-                >
-                  {busy && <SpinnerIcon className="btn-icon" />}
-                  Set up the stack
-                </button>
-              ) : (
-                <button
-                  className="btn btn--primary"
-                  disabled={!filled || busy}
-                  title={
-                    filled
-                      ? "Check the indexer and usenet account before deploying"
-                      : "Fill in every field first"
-                  }
-                  onClick={validate}
-                >
-                  {busy && <SpinnerIcon className="btn-icon" />}
-                  Validate
-                </button>
-              )}
+            <div
+              className="preview-row"
+              style={{
+                marginTop: "var(--sp-6)",
+                justifyContent: "space-between",
+              }}
+            >
               <button
                 className="btn btn--ghost"
-                disabled={busy}
-                onClick={onClose}
+                disabled={busy || stepIdx === 0}
+                onClick={goBack}
               >
-                Cancel
+                Back
+              </button>
+              <button
+                className="btn btn--primary"
+                disabled={busy || !filledFor(stepId)}
+                onClick={goNext}
+                title={
+                  filledFor(stepId) ? undefined : "Fill in this step first"
+                }
+              >
+                {busy && <SpinnerIcon className="btn-icon" />}
+                {stepId === "review" ? "Set up the stack" : "Next"}
               </button>
             </div>
           </>
