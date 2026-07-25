@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.38.0"
+VERSION = "0.39.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -5514,17 +5514,37 @@ def _stack_inputs(data):
 
 def op_stack_validate(data):
     """Live-check the wizard's inputs BEFORE anything deploys — the
-    green-checks step that makes a failed run near-impossible."""
+    green-checks step that makes a failed run near-impossible.
+
+    `only` (media|indexer|usenet) validates just that one input — the
+    step-by-step wizard checks each component as the user leaves its step,
+    so leaving the indexer step never dials NNTP, and vice versa. The other
+    checks come back green-but-unprobed; the caller reads only the one it
+    asked for, and op_stack_install always re-validates the full set."""
+    only = (data.get("only") or "").strip()
     inputs, errors = _stack_inputs(data)
-    checks = {"media": {"ok": "media" not in errors,
-                        "error": errors.get("media")}}
-    err = errors.get("indexer") or _validate_newznab(
-        inputs["indexer"]["url"], inputs["indexer"]["key"])
-    checks["indexer"] = {"ok": not err, "error": err}
-    u = inputs["usenet"]
-    err = errors.get("usenet") or _validate_usenet(
-        u["host"], u["port"], u["ssl"], u["user"], u["password"])
-    checks["usenet"] = {"ok": not err, "error": err}
+
+    def media_check():
+        return {"ok": "media" not in errors, "error": errors.get("media")}
+
+    def indexer_check():
+        err = errors.get("indexer") or _validate_newznab(
+            inputs["indexer"]["url"], inputs["indexer"]["key"])
+        return {"ok": not err, "error": err}
+
+    def usenet_check():
+        u = inputs["usenet"]
+        err = errors.get("usenet") or _validate_usenet(
+            u["host"], u["port"], u["ssl"], u["user"], u["password"])
+        return {"ok": not err, "error": err}
+
+    fns = {"media": media_check, "indexer": indexer_check,
+           "usenet": usenet_check}
+    if only in fns:
+        checks = {k: {"ok": True, "error": None} for k in fns}
+        checks[only] = fns[only]()
+    else:
+        checks = {k: fn() for k, fn in fns.items()}
     ok = all(c["ok"] for c in checks.values())
     return {"ok": ok, "error": None if ok
             else "Fix the failing checks and validate again.",

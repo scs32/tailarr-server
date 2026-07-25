@@ -598,6 +598,20 @@ a:hover { text-decoration: underline; }
 .stack-card__name { font-weight: 600; letter-spacing: .01em; }
 .stack-card__services { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
 
+/* Magic Stack wizard: a step rail + one screen per step. */
+.wiz-rail { display: flex; flex-wrap: wrap; gap: var(--sp-4); margin: 0 0 var(--sp-5); padding-bottom: var(--sp-4); border-bottom: 1px solid var(--divider); }
+.wiz-rail__step { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-xs); font-weight: var(--fw-medium); color: var(--faint); }
+.wiz-rail__num { width: 20px; height: 20px; flex: none; border-radius: 50%; display: grid; place-items: center; background: var(--surface-2); color: var(--muted); font-size: 11px; font-weight: 600; }
+.wiz-rail__step--active { color: var(--text); }
+.wiz-rail__step--active .wiz-rail__num { background: var(--accent); color: var(--accent-contrast); }
+.wiz-rail__step--done .wiz-rail__num { background: var(--ok); color: var(--accent-contrast); }
+.wiz-step__head { font-family: var(--font-display); font-size: var(--fs-lg); color: var(--text); margin: 0 0 var(--sp-1); }
+.wiz-step__hint { font-size: var(--fs-sm); color: var(--muted); margin: 0 0 var(--sp-4); }
+.wiz-review { display: flex; flex-direction: column; }
+.wiz-review__row { display: flex; justify-content: space-between; gap: var(--sp-4); padding: var(--sp-3) 0; border-bottom: 1px solid var(--divider); font-size: var(--fs-sm); }
+.wiz-review__k { color: var(--muted); }
+.wiz-review__v { color: var(--text); text-align: right; word-break: break-word; }
+
 /* Stack rail: logo tiles joined by a cyan wire — the card's signature.
    The dashes flow toward the downloader on hover (the pipeline, animated);
    reduced-motion keeps them still. */

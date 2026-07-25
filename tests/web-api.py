@@ -2520,6 +2520,40 @@ try:
 finally:
     app.socket.create_connection = _real_conn
 
+# op_stack_validate `only`: the step wizard checks one component at a time,
+# so leaving the indexer step must NOT dial the usenet server (and vice
+# versa). Track which validators run.
+_probed = []
+_real_vn = app._validate_newznab
+_real_vu = app._validate_usenet
+app._validate_newznab = lambda url, key: (_probed.append("indexer"), None)[1]
+app._validate_usenet = lambda h, p, s, u, w: (_probed.append("usenet"), None)[1]
+try:
+    _sv_body = {
+        "stack": "usenet-starter", "media": "/srv/media",
+        "indexer": {"url": "https://idx.test", "key": "k"},
+        "usenet": {"host": "news.test", "port": 563, "ssl": True,
+                   "user": "u", "password": "p"}}
+    _probed.clear()
+    r = app.op_stack_validate({**_sv_body, "only": "indexer"})
+    check(r["ok"] and r["checks"]["indexer"]["ok"] and _probed == ["indexer"],
+          "validate only:indexer probes the indexer and NOT the usenet server")
+    _probed.clear()
+    r = app.op_stack_validate({**_sv_body, "only": "usenet"})
+    check(r["ok"] and _probed == ["usenet"],
+          "validate only:usenet probes the usenet server and NOT the indexer")
+    _probed.clear()
+    r = app.op_stack_validate({**_sv_body, "only": "media"})
+    check(r["ok"] and _probed == [],
+          "validate only:media does no network probes")
+    _probed.clear()
+    r = app.op_stack_validate(_sv_body)
+    check(sorted(_probed) == ["indexer", "usenet"],
+          "no `only` still validates the full set (back-compat)")
+finally:
+    app._validate_newznab = _real_vn
+    app._validate_usenet = _real_vu
+
 # nzbget seeding: seed-once guardrail + the actual write.
 _nzconf_dir = os.path.join(pods, "nzbget", "config")
 os.makedirs(_nzconf_dir, exist_ok=True)

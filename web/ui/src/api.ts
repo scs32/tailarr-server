@@ -172,8 +172,14 @@ export const api = {
   ntfy: () => getJSON<NtfyStatus>("/api/ntfy"),
 
   stacks: () => getJSON<StacksStatus>("/api/stacks"),
-  stackValidate: (body: StackInputs) =>
-    postJSON<StackValidateResult>("/api/stacks", { ...body, do: "validate" }),
+  // `only` (media|indexer|usenet) validates just that component — the
+  // step wizard checks each input as the user leaves its step.
+  stackValidate: (body: StackInputs, only?: "media" | "indexer" | "usenet") =>
+    postJSON<StackValidateResult>("/api/stacks", {
+      ...body,
+      do: "validate",
+      ...(only ? { only } : {}),
+    }),
   stackInstall: (body: StackInputs) =>
     postJSON<StackInstallResult>("/api/stacks", { ...body, do: "install" }),
 
