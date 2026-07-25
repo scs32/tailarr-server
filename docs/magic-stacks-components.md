@@ -37,7 +37,7 @@ in the background progress stepper.
 
 | Component | Asks for | Live validation | Provides |
 |---|---|---|---|
-| **`media`** (media storage) | one host folder | absolute path, exists | the `/data` root + `/data/media/{tv,movies,music}` — **as a real Shared Folder** (see below) |
+| **`media`** (media storage) | **pick a Shared Folder, or add one** (single-select) | folder exists (or is `mkdir`'d on add) | the `/data` root + `/data/media/{tv,movies,music}` — a real Shared Folder (see [Step 1](#step-1--pick-a-shared-folder-the-media-component)) |
 | **`indexer`** | newznab URL + key (or a saved Accounts entry) | `_validate_newznab` (caps + authenticated probe) | `{url, key}` |
 | **`usenet`** | host / port / ssl / user / pass (or a saved Accounts entry) | `_validate_usenet` (raw NNTP dial) | news-server credentials |
 | **`downloader`** *(choice)* | pick `nzbget` **or** `sabnzbd` | none (a selection, not a secret) | the download client `{ip, port, creds}` |
@@ -86,7 +86,7 @@ managers ──► hub (applications) ──► [managers skip their own indexer
 "full-library": {
   name, blurb,
   components: {
-    media:      { mode: "assume", default: "/srv/media" },
+    media:      { mode: "share", default: "/srv/media" },   // step 1: pick or add a Shared Folder
     indexer:    { mode: "ask" },
     usenet:     { mode: "ask" },
     downloader: { mode: "choice", options: ["nzbget", "sabnzbd"] },
@@ -104,42 +104,79 @@ managers ──► hub (applications) ──► [managers skip their own indexer
 
 The wizard renders **one step per input component**, gated by its `mode`:
 
+- **`share`** → always step 1: pick an existing Shared Folder or add one (the
+  `media` component — see below). Deliberately *not* assumed: storage is the
+  foundation the whole pipeline sits on and the one high-stakes, hard-to-move
+  choice, so it's taught and confirmed up front.
 - **`ask`** → always a step (indexer, usenet).
 - **`choice`** → a step **only if** `options.length > 1` (the downloader picker
   already behaves this way).
 - **`assume`** → **no step**; use `default`. Optionally surfaced on a final
-  *Review* step so it's overridable without being in the user's face.
+  *Review* step so it's overridable without being in the user's face. (No current
+  component uses this; it's the mechanism for a future input that has a safe
+  default and low stakes.)
 - **absent** (component not in the map) → never asked, never assumed; it simply
   doesn't exist for that stack.
 
-This is the whole of "if you don't need a shared folder, it doesn't ask or it
-assumes": set `media` to `assume` (default path, no step) or omit it entirely
-for a stack that reuses existing storage.
+So a stack that doesn't need a component simply omits it, and one whose input is
+low-stakes can `assume` a default — while `media` stays an explicit first step
+because storage is the exception that's worth deliberating once.
 
-## The `media` component IS a Shared Folder (decided)
+## Step 1 — pick a Shared Folder (the `media` component)
 
 Today the stack bind-mounts the user's chosen folder straight into each pod at
 `/data` (`_stack_install_req`), bypassing the Shared Folders registry
 (`.shares.json`). That creates two parallel worlds: stack pods mount media one
-way, everything else via Shares. **Decision: the `media` component provisions a
-real Shared Folder** named `media` (host path defaulting to **`/srv/media`**),
-and the managers/downloader attach it by share name.
+way, everything else via Shares. **Decision: the `media` component is a real
+Shared Folder, and choosing it is the wizard's first step** — framed as the
+foundation the stack is built on, not a buried path field.
 
-Why `/srv/media`: FHS-correct (`/srv` = "data served by this system"), an
-obvious mount point for a dedicated disk, and it still maps to `/data` inside the
-pods. It must be a single tree (media + downloads together on one filesystem) so
-Sonarr/Radarr import by hardlink/atomic-move rather than slow copies.
+### The framing
 
-Consequences:
+Step 1 teaches *why* before it asks. Draft copy (function-first, no jargon):
 
-- The wizard's media step reuses `FolderBrowser`, pre-filled with `/srv/media`,
-  and its help text says *this becomes a Shared Folder* and links to the Shares
-  page.
-- On run, the component creates the share (`op_share_add`-equivalent) if absent
-  — seed-once: an existing `media` share is the user's, left untouched — and the
-  managers attach it via their `shares: ["media"]` list instead of a raw volume.
-- The folder is now managed in one place, visible on the Shares page, reusable
-  by non-stack pods, and NFS-exportable — the same first-class object everything
+> **Start with a shared folder**
+> A Magic Stack runs several apps as one pipeline — your downloader saves,
+> Sonarr and Radarr import, your media server plays — all using the **same
+> library**. That only works when they share one folder, so downloads are
+> imported in place instead of copied around.
+>
+> Pick the folder this stack should use, or add one.
+
+### The control (decided)
+
+- **Single-select.** A stack's `/data` is one tree in v1, so step 1 picks *the*
+  one folder this stack uses. (Multiple shares per stack — e.g. separate
+  downloads vs media mounts — is a real future case, not v1.)
+- Existing shares render as selectable cards: name · host path · `used_by` count
+  · a warning when the host folder is missing. All of that already comes from
+  `status_shares`.
+- **"Add a shared folder" expands inline** (name defaulting to `media`,
+  `FolderBrowser` defaulting to **`/srv/media`**, `mkdir -p` on create). The new
+  share is created via the same op the Shares page uses and auto-selected — no
+  trip to another page.
+- **Fresh box (no shares)** → the list is empty and only the "Add" card shows.
+  That *is* the fresh-install path: the first Shared Folder is created here as a
+  first-class object, which is why no separate "confirm the default" step is
+  needed.
+- Copy uses **"a shared folder"** (singular) to match the single pick; the
+  concept is still that services *share* it.
+
+### Why `/srv/media`
+
+FHS-correct (`/srv` = "data served by this system"), an obvious mount point for a
+dedicated disk, and it maps cleanly to `/data` inside the pods. It must be a
+single tree (media + downloads together on one filesystem) so Sonarr/Radarr
+import by hardlink/atomic-move rather than slow copies.
+
+### Wiring consequences
+
+- On run, the `media` component ensures the chosen Shared Folder exists
+  (seed-once: an existing share is the user's, left untouched) and the
+  managers/downloader attach it via their `shares: [...]` list instead of the
+  raw `/data` volume in `_stack_install_req`.
+- The folder is now managed in one place, visible on the Shares page, reusable by
+  non-stack pods, and NFS-exportable — the same first-class object everything
   else already uses.
 
 ## What this unlocks
