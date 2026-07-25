@@ -122,6 +122,10 @@ So a stack that doesn't need a component simply omits it, and one whose input is
 low-stakes can `assume` a default — while `media` stays an explicit first step
 because storage is the exception that's worth deliberating once.
 
+There is **no separate Overview screen** — Step 1 (the shared-folder picker) is
+the wizard's front door. It already explains what the stack builds and what's
+needed, so a dedicated intro would be redundant.
+
 ## Step 1 — pick a Shared Folder (the `media` component)
 
 Today the stack bind-mounts the user's chosen folder straight into each pod at
