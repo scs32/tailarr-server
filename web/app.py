@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ntfy_client  # local module beside app.py; stdlib-only
 
-VERSION = "0.37.0"
+VERSION = "0.38.0"
 
 APP_DIR = os.environ.get("APP_DIR", "/app")
 PODS_DIR = os.environ.get("PODS_DIR", "/root/Pods")
@@ -78,7 +78,7 @@ GATEWAY_FILE = os.path.join(PODS_DIR, ".gateway.json")
 # Function-first display names for the infrastructure pods, used where
 # they legitimately appear to the admin (resource stats) — never leak
 # the implementation name. Everywhere else they're hidden outright.
-POD_DISPLAY_NAMES = {"tailarr-gate": "Tailarr app setup"}
+POD_DISPLAY_NAMES = {"tailarr-gate": "Configurator"}
 
 
 def _display_name(name):
@@ -5995,6 +5995,204 @@ def op_stack_install(data):
 
 
 # =========================================================================
+# First-run setup (v0.38.0) — a fresh install has real work to do before it
+# feels ready: bring up the Configurator (self-config gateway), turn on
+# notifications, and enable the peer relay. Each takes long enough (pods
+# deploy, sidecars enroll, funnel comes up) that a blank dashboard reads as
+# "broken". The controller runs the saga itself on first boot (so headless
+# installs finish too) and streams steps into .setup.json; the SPA shows a
+# blocking "Finishing installation" overlay until it's done. Modeled on the
+# Magic Stacks stepper. Runs ONCE — existing/upgraded installs seed "done"
+# so the overlay never appears there. Relay is best-effort: its capability
+# half (`tailscale set --relay-server-port`) can only be enabled on the host,
+# so a failed check WARNS (with the command) instead of blocking the run.
+
+SETUP_FILE = os.path.join(PODS_DIR, ".setup.json")
+_setup_lock = threading.Lock()
+
+
+def load_setup():
+    try:
+        with open(SETUP_FILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _save_setup(run):
+    tmp = SETUP_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(run, f, indent=2)
+    os.replace(tmp, SETUP_FILE)
+
+
+def _setup_step_set(key, state, detail=""):
+    with _setup_lock:
+        run = load_setup()
+        if not run:
+            return
+        for s in run["steps"]:
+            if s["key"] == key:
+                s["state"] = state
+                s["detail"] = detail
+        _save_setup(run)
+
+
+def _setup_finish(state, error=None):
+    with _setup_lock:
+        run = load_setup()
+        if not run:
+            run = {"state": state, "started": int(time.time()), "steps": []}
+        run["state"] = state
+        run["error"] = error
+        run["finished"] = int(time.time())
+        _save_setup(run)
+
+
+def _setup_steps():
+    return [
+        {"key": "gateway", "label": "Starting the Configurator",
+         "state": "pending", "detail": ""},
+        {"key": "notifications", "label": "Turning on notifications",
+         "state": "pending", "detail": ""},
+        {"key": "relay", "label": "Enabling peer relay",
+         "state": "pending", "detail": ""},
+        {"key": "relay_check", "label": "Checking peer relay",
+         "state": "pending", "detail": ""},
+    ]
+
+
+def status_setup():
+    """GET /api/setup — the overlay polls this; `unknown` = the startup
+    decision hasn't landed yet (brief; the SPA shows nothing)."""
+    run = load_setup()
+    if not run:
+        return {"state": "unknown", "steps": [], "error": None,
+                "started": 0, "finished": 0}
+    return run
+
+
+def _install_has_history():
+    """Signs this controller is NOT a blank first boot (upgraded or
+    already-configured): the Configurator is up, notifications are set up,
+    or the admin has deployed a real service. Any of these => skip the
+    first-run overlay and seed the marker `done`."""
+    try:
+        deployed = deployed_services()
+        if GATEWAY_POD in deployed:
+            return True
+        if ntfy_client.load_conf():
+            return True
+        for name in deployed:
+            if name in CONTROLLER_PODS or name == GATEWAY_POD \
+                    or _is_system(name):
+                continue
+            return True
+    except Exception:
+        # Never let detection wedge startup — err toward "has history" so a
+        # probe failure can't loop an overlay onto an established install.
+        return True
+    return False
+
+
+def _seed_setup_done():
+    now = int(time.time())
+    _save_setup({"state": "done", "started": now, "finished": now,
+                 "error": None, "seeded": True, "steps": []})
+
+
+def _setup_should_run():
+    """First-boot gate. Resumes an interrupted run; never re-runs a finished
+    one; seeds `done` (no overlay) for existing installs or when there's no
+    Tailscale credential to act with (a broken bootstrap — don't loop)."""
+    run = load_setup()
+    if run:
+        return run.get("state") in ("pending", "running")
+    if not os.path.exists(TSAPI_FILE) or _install_has_history():
+        _seed_setup_done()
+        return False
+    return True
+
+
+def _setup_worker():
+    with _setup_lock:
+        _save_setup({"state": "running", "started": int(time.time()),
+                     "finished": None, "error": None,
+                     "steps": _setup_steps()})
+
+    def step(skey, fn, fatal=True):
+        _setup_step_set(skey, "running")
+        try:
+            result = fn()
+        except Exception as e:
+            _setup_step_set(skey, "failed" if fatal else "warn",
+                            str(e)[:200])
+            if fatal:
+                raise
+            return
+        # A step may return a plain detail string (=> ok) or ("warn", detail).
+        state, detail = result if isinstance(result, tuple) else ("ok", result)
+        _setup_step_set(skey, state, detail if isinstance(detail, str) else "")
+
+    try:
+        def _gw():
+            err = _ensure_gateway()
+            if err:
+                raise RuntimeError(err)
+            return "ready"
+        step("gateway", _gw)
+
+        def _ntfy():
+            res = op_ntfy_setup({})
+            if not res.get("ok"):
+                raise RuntimeError(res.get("error")
+                                   or "notifications setup failed")
+            return "on — reachable from your phone (secured)"
+        step("notifications", _ntfy)
+
+        def _relay():
+            res = op_relay("enable")
+            if not res.get("ok"):
+                raise RuntimeError(res.get("error") or "could not enable relay")
+            return "enabled"
+        step("relay", _relay, fatal=False)
+
+        def _relay_check():
+            relay_verify()
+            st = status_relay()
+            state = (st.get("verified") or {}).get("state") or "unknown"
+            if state in ("peer-relay", "direct"):
+                return ("ok", "connections are working (%s)" % state)
+            return ("warn",
+                    "Not carrying traffic yet — on the host run: "
+                    + (st.get("command") or ""))
+        step("relay_check", _relay_check, fatal=False)
+
+        _setup_finish("done")
+        notify_ops("Tailarr is ready",
+                   "First-run setup finished: Configurator, notifications, "
+                   "and peer relay are on.", tags=["sparkles"])
+    except Exception as e:
+        _setup_finish("failed", str(e)[:300])
+
+
+def op_setup(data):
+    """POST /api/setup — retry a failed/interrupted run, or skip (dismiss)
+    so the admin is never trapped behind the overlay."""
+    do = (data.get("do") or "").strip()
+    if do == "retry":
+        run = load_setup()
+        if run and run.get("state") == "running":
+            return {"ok": False, "error": "Setup is already running."}
+        threading.Thread(target=_setup_worker, daemon=True).start()
+        return {"ok": True, "error": None}
+    if do == "skip":
+        _seed_setup_done()
+        return {"ok": True, "error": None}
+    return {"ok": False, "error": f"unknown do '{do}'"}
+
+
+# =========================================================================
 # Push wakes (v0.26.0) — real background push for the Tailarr app via the
 # vendor relay (push.tailarr.com, repo scs32/tailarr-relay). The relay is
 # content-free: the controller tells it only "wake device token X", the
@@ -6714,6 +6912,8 @@ def api_get(path):
         return 200, status_ntfy()
     if path == "/api/stacks":
         return 200, status_stacks()
+    if path == "/api/setup":
+        return 200, status_setup()
     if path == "/api/stats":
         return 200, status_stats()
     if path == "/api/users":
@@ -6959,6 +7159,10 @@ def api_post(path, data):
             return 400, {"ok": False, "error": "Unknown action."}
         return (200 if result["ok"] else 400), result
 
+    if path == "/api/setup":
+        result = op_setup(data)
+        return (200 if result["ok"] else 400), result
+
     if path == "/api/ntfy/setup":
         result = op_ntfy_setup(data)
         return (200 if result["ok"] else 400), result
@@ -7133,6 +7337,15 @@ def _maintenance_loop():
     # Mirror ntfy messages into content-free push wakes (idle unless
     # devices have registered tokens via the gateway).
     threading.Thread(target=_push_waker_loop, daemon=True).start()
+    # First-run setup saga: on a fresh install, bring up the Configurator,
+    # notifications, and peer relay so a new box doesn't look broken while
+    # they spin up. Seeds "done" (no overlay) on existing/upgraded installs;
+    # resumes an interrupted run (every step is idempotent).
+    try:
+        if _setup_should_run():
+            threading.Thread(target=_setup_worker, daemon=True).start()
+    except Exception as e:
+        print(f"first-run setup error: {e}")
     while True:
         try:
             ensure_controller_serve()

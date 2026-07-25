@@ -588,6 +588,11 @@ a:hover { text-decoration: underline; }
 .upgrade-step--done .upgrade-step__dot { color: var(--ok); }
 .upgrade-step__idle { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .5; }
 
+/* First-run setup overlay: reuses .upgrade-overlay; adds a per-step detail
+   line (relay host command / error) and a button row. */
+.setup-step__detail { display: block; font-size: var(--fs-xs, 12px); color: var(--muted); margin-top: 2px; word-break: break-word; }
+.setup-actions { display: flex; gap: var(--sp-3); justify-content: center; margin-top: var(--sp-5); }
+
 /* Magic Stacks (catalog wizard) */
 .stack-card { display: flex; flex-direction: column; gap: var(--sp-3); }
 .stack-card__name { font-weight: 600; letter-spacing: .01em; }

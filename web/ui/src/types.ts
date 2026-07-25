@@ -573,3 +573,23 @@ export interface StackInstallResult {
   error: string | null;
   checks?: StackValidateResult["checks"];
 }
+
+// GET /api/setup — first-run "Finishing installation" saga. The controller
+// runs it once on a fresh install; the SPA polls this to drive the blocking
+// overlay. `unknown` = the startup decision hasn't landed yet (show nothing).
+export type SetupState = "unknown" | "pending" | "running" | "done" | "failed";
+
+export interface SetupStep {
+  key: string;
+  label: string;
+  state: "pending" | "running" | "ok" | "warn" | "failed";
+  detail: string;
+}
+
+export interface SetupStatus {
+  state: SetupState;
+  steps: SetupStep[];
+  error: string | null;
+  started?: number;
+  finished?: number;
+}
